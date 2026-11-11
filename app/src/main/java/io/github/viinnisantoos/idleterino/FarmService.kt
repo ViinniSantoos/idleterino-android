@@ -47,6 +47,8 @@ class FarmService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) { fecharTudo() }
 
     private fun fecharTudo() {
+        // Avisa o PC que o celular fechou (ele volta a farmar a Twitch/Kick na hora).
+        try { Elo.avisar(this, false, false, fim = true)?.join(800) } catch (_: Exception) {}
         ligado = false
         lock?.let { if (it.isHeld) it.release() }
         lock = null

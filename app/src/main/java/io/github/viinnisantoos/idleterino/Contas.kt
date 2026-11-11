@@ -72,7 +72,7 @@ object Contas {
      * Abre o pacote do QR do PC ("c2." + base64url(sal 16 | iv 12 | dados + etiqueta 16)) com o PIN de 8 números:
      * AES-256-GCM, chave PBKDF2-SHA256 de 310 mil voltas. Devolve as sessões, ou lança erro com a mensagem para a pessoa.
      */
-    fun abrirPacote(d: String, pin: String): List<String> {
+    fun abrirPacote(c: Context, d: String, pin: String): List<String> {
         if (!pacoteValido(d)) throw IllegalArgumentException("Este QR não é do Idleterino (ou é de uma versão antiga). Gere outro no PC.")
         if (!Regex("^\\d{8}$").matches(pin)) throw IllegalArgumentException("O PIN tem 8 números. Confira na tela do PC.")
         val bytes = Base64.decode(d.substring(3), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
@@ -87,6 +87,8 @@ object Contas {
         // Os 5 minutos são controlados pelo PC (o guichê fecha sozinho). Aqui só recusa pacote velho de verdade (30 min),
         // para uma diferença de relógio entre o PC e o celular não atrapalhar.
         if (exp <= 0L || exp + 25 * 60 * 1000L < System.currentTimeMillis()) throw IllegalArgumentException("Este QR é antigo. Gere outro no PC.")
+        // Chave do par PC+celular (Twitch/Kick: o celular avisa o PC pelo Wi-Fi quando está farmando aqui).
+        j.optString("k").takeIf { it.isNotBlank() }?.let { Elo.guardarChave(c, it) }
         // v2 (curto): c = [[nick, código, provedor], ...] → monta o `sessao` do jogo. v1: contas = [{ sessao }].
         j.optJSONArray("c")?.let { c ->
             return (0 until minOf(c.length(), 4)).mapNotNull { i ->

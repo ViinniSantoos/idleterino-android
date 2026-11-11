@@ -140,6 +140,9 @@ class Plataforma(private val a: MainActivity, val ns: String, private val fundo:
         site?.let { destruir(it) }; site = null
     }
 
+    /** Farmando aqui agora (o PC, avisado pelo Wi-Fi, para a dele). */
+    fun farmandoAqui() = ligado && logado && !(soWifi && medido())
+
     fun aoVoltarParaATela() { if (siteBox.visibility != View.VISIBLE) desenhar() }
 
     // ---------------- navegador interno da plataforma ----------------
@@ -606,6 +609,7 @@ class Plataforma(private val a: MainActivity, val ns: String, private val fundo:
                 vigias.isEmpty() -> "Nenhuma live oficial no ar agora. O app confere a cada 1,5 min."
                 else -> "▶ Assistindo: " + vigias.keys.joinToString(", ") { est(it).nome.ifBlank { it } }
             }
+            cab.addView(texto(if (Elo.pareado(a)) "🖥 Com o Wi-Fi de casa, o Idleterino do PC para a $nome dele enquanto ela farma aqui e volta quando você fechar o app." else "🖥 Para o PC parar a $nome dele quando você farmar aqui: traga as contas pelo QR do PC de novo (Idleterino do PC atualizado).", 12f, false, "#8F88B8"))
             cab.addView(texto("$st\nHoje: +${nf(ganhoHoje())} pontos" + if (twitch && bausHoje() > 0) " · ${bausHoje()} baú(s) pego(s)" else "", 13f, false, "#B7B0DD"))
         }
         lista.addView(cab)

@@ -135,11 +135,22 @@ class MainActivity : Activity() {
         raiz.addView(barra, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         setContentView(raiz)
         plataformas.forEach { it.iniciar() }
+        laco.post(eloCiclo)
+    }
+
+    // A cada minuto: se a Twitch/Kick está farmando aqui, avisa o Idleterino do PC (Wi-Fi de casa) para ele parar a dele.
+    private val eloCiclo = object : Runnable {
+        override fun run() {
+            val tw = plataformas.firstOrNull { it.twitch }?.farmandoAqui() ?: false
+            val kk = plataformas.firstOrNull { !it.twitch }?.farmandoAqui() ?: false
+            Elo.avisar(this@MainActivity, tw, kk)
+            laco.postDelayed(this, 60_000L)
+        }
     }
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     private fun montarContas() {
-        laco.removeCallbacksAndMessages(null); falhas.clear()
+        laco.removeCallbacksAndMessages(null); falhas.clear(); laco.postDelayed(eloCiclo, 5_000L)
         for (c in contas) { c.script?.remove(); (c.web.parent as? ViewGroup)?.removeView(c.web); c.web.destroy() }
         contas.clear(); area.removeAllViews(); gradeAlts.removeAllViews(); ampliada = null
         val nicks = Contas.ordem(this)
@@ -340,7 +351,7 @@ class MainActivity : Activity() {
                 val pin = campo.text.toString().filter { it.isDigit() }
                 thread {
                     try {
-                        val nicks = Contas.abrirPacote(d, pin).mapNotNull { Contas.guardar(this, it) }
+                        val nicks = Contas.abrirPacote(this, d, pin).mapNotNull { Contas.guardar(this, it) }
                         runOnUiThread {
                             if (nicks.isEmpty()) { aviso("Nenhuma conta veio no QR."); return@runOnUiThread }
                             if (Contas.ativa(this) == null || Contas.ordem(this).none { it.equals(Contas.ativa(this), true) }) Contas.marcarAtiva(this, nicks.first())
