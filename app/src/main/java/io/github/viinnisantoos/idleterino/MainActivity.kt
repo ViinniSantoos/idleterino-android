@@ -315,6 +315,7 @@ class MainActivity : Activity() {
                 "farm" -> { telaDesligada = d.optBoolean("ligar"); FarmService.ligar(this, telaDesligada); if (telaDesligada) pedirSemEconomiaDeBateria(); true }
                 "atualizacao" -> Atualizacao.estado()
                 "atualizarAgora" -> { Atualizacao.instalar(this); true }
+                "atualizarNavegador" -> { Atualizacao.baixarPeloNavegador(this); true }
                 "copiar" -> { (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Idleterino", d.optString("texto").take(500))); true }
                 "abrir" -> { abrirFora(d.optString("url")); true }
                 "verificarAtualizacao" -> { Atualizacao.verificar(this, true); true }

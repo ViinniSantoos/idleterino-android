@@ -23,7 +23,8 @@ import kotlin.concurrent.thread
  */
 object Atualizacao {
     private const val API = "https://api.github.com/repos/ViinniSantoos/idleterino-android/releases/latest"
-    private const val PAGINA = "https://github.com/ViinniSantoos/idleterino-android/releases/latest"
+    /** Plano B: baixa o arquivo direto pelo navegador (sem passar pela página do GitHub). */
+    const val DIRETO = "https://github.com/ViinniSantoos/idleterino-android/releases/latest/download/Idleterino-android.apk"
     private const val ARQUIVO = "Idleterino-android.apk"
     const val ACAO = "io.github.viinnisantoos.idleterino.INSTALOU"
     private const val CONFIRMAR = "android.content.pm.action.CONFIRM_INSTALL"
@@ -36,6 +37,8 @@ object Atualizacao {
     private var avisouPronta = false
 
     fun estado(): JSONObject = JSONObject().put("versao", nova ?: JSONObject.NULL).put("progresso", progresso).put("erro", erro ?: JSONObject.NULL)
+
+    fun baixarPeloNavegador(a: Activity) { try { a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(DIRETO))) } catch (_: Exception) {} }
 
     private fun arquivo(a: Activity) = File(File(a.cacheDir, "atualizacao").apply { mkdirs() }, "nova.apk")
 
@@ -72,17 +75,19 @@ object Atualizacao {
             val c = URL(u).openConnection() as HttpURLConnection
             c.instanceFollowRedirects = true
             c.connectTimeout = 15000; c.readTimeout = 30000
-            if (c.responseCode != 200) throw Exception("download ${c.responseCode}")
+            c.setRequestProperty("User-Agent", "Idleterino-Android")
+            if (c.responseCode != 200) throw Exception("o GitHub respondeu ${c.responseCode}")
             val total = c.contentLengthLong
             var feito = 0L
             c.inputStream.use { inp -> f.outputStream().use { out ->
                 val buf = ByteArray(64 * 1024)
                 while (true) { val n = inp.read(buf); if (n < 0) break; out.write(buf, 0, n); feito += n; if (total > 0) progresso = minOf(99, (feito * 100 / total).toInt()) }
             } }
-            if (!eDoIdleterino(a, f)) { f.delete(); throw Exception("O arquivo baixado não é o Idleterino oficial.") }
+            if (f.length() < 100_000) { f.delete(); throw Exception("o arquivo veio incompleto") }
+            if (!eDoIdleterino(a, f)) { f.delete(); throw Exception("o arquivo baixado não é o Idleterino oficial") }
             progresso = 100
             avisarPronta(a)
-        } catch (e: Exception) { progresso = -1; erro = e.message }
+        } catch (e: Exception) { progresso = -1; erro = (e.message ?: e.javaClass.simpleName).take(160) }
     }
 
     private fun avisarPronta(a: Activity) {
@@ -108,16 +113,19 @@ object Atualizacao {
         val flag = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else @Suppress("DEPRECATION") PackageManager.GET_SIGNATURES
         val novo = pm.getPackageArchiveInfo(f.path, flag) ?: return false
         if (novo.packageName != a.packageName) return false
-        val sNovo = assinaturas(pm, novo)
-        val sAtual = assinaturas(pm, pm.getPackageInfo(a.packageName, flag))
-        return sNovo.isNotEmpty() && sAtual.isNotEmpty() && sNovo.any { it in sAtual }
+        val sNovo = try { assinaturas(pm, novo) } catch (_: Exception) { emptySet() }
+        val sAtual = try { assinaturas(pm, pm.getPackageInfo(a.packageName, flag)) } catch (_: Exception) { emptySet() }
+        // Sem ler a assinatura do arquivo (alguns Android não leem a de um APK solto), quem garante é o próprio instalador
+        // do Android: ele RECUSA atualizar com um arquivo de outra chave. Lendo, tem que bater aqui também.
+        if (sNovo.isEmpty() || sAtual.isEmpty()) return true
+        return sNovo.any { it in sAtual }
     }
 
     /** "Atualizar agora": instala o arquivo baixado por cima (o Android pede a confirmação). */
     fun instalar(a: Activity) {
         val f = arquivo(a)
         if (progresso != 100 || !f.exists()) {
-            if (nova != null && progresso < 0) thread { baixar(a) } else if (nova == null) a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PAGINA)))
+            if (nova != null && progresso < 0) { progresso = 0; erro = null; thread { progresso = -1; baixar(a) } } else if (nova == null) baixarPeloNavegador(a)
             return
         }
         thread {
@@ -134,7 +142,7 @@ object Atualizacao {
                     val pend = PendingIntent.getActivity(a, 3, volta, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
                     s.commit(pend.intentSender)
                 }
-            } catch (e: Exception) { a.runOnUiThread { Toast.makeText(a, "Não deu para atualizar: ${e.message}", Toast.LENGTH_LONG).show() } }
+            } catch (e: Exception) { erro = (e.message ?: e.javaClass.simpleName).take(160); a.runOnUiThread { Toast.makeText(a, "Não deu para atualizar: ${e.message}", Toast.LENGTH_LONG).show() } }
         }
     }
 

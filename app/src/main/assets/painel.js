@@ -117,8 +117,19 @@
   function faixaAtt() {
     if (!att || !att.versao) return '';
     if (att.progresso === 100) return `<div class="card" style="border-color:#53fc18"><div class="t">⬆ Atualização ${esc(att.versao)} pronta</div><div class="sub">Já foi baixada. O app fecha e abre de novo na versão nova; as contas continuam salvas.</div><button class="btn" id="attAgora">Atualizar agora</button></div>`;
-    if (att.progresso >= 0) return `<div class="card"><div class="sub">⬇ Baixando a versão ${esc(att.versao)}… ${att.progresso}%</div></div>`;
-    return `<div class="card"><div class="t">⬆ Versão ${esc(att.versao)} disponível</div><button class="btn" id="attAgora">Baixar e atualizar</button></div>`;
+    if (att.progresso >= 0) return `<div class="card"><div class="t">⬇ Baixando a versão ${esc(att.versao)}… ${att.progresso}%</div><div class="bar"><i style="width:${att.progresso}%"></i></div><div class="sub">Quando terminar, aparece "Atualizar agora".</div></div>`;
+    return `<div class="card"><div class="t">⬆ Versão ${esc(att.versao)} disponível</div><button class="btn" id="attAgora">Baixar e atualizar</button>${att.erro ? `<div class="sub bad">Da última vez não baixou: ${esc(att.erro)}.</div><button class="btn g2" id="attNav">Baixar pelo navegador</button><div class="sub">Pelo navegador: quando terminar, toque no arquivo baixado e em "Instalar" (as contas continuam salvas).</div>` : ''}</div>`;
+  }
+  // Depois do toque: acompanha o download de perto (1 em 1 s) até ficar pronto ou dar erro.
+  let seguindo = null;
+  function seguirAtt() {
+    clearInterval(seguindo);
+    let n = 0;
+    seguindo = setInterval(async () => { await verAtt(); if (aba === 'inicio' && $('#pn').classList.contains('on')) desenhar(); if (++n > 180 || !att || att.progresso === 100 || (att.progresso < 0 && n > 3)) clearInterval(seguindo); }, 1000);
+  }
+  function ligarAtt() {
+    const ag = $('#attAgora'); if (ag) ag.onclick = async () => { ag.disabled = true; ag.textContent = att && att.progresso === 100 ? 'Abrindo o instalador…' : 'Baixando…'; await chamar('atualizarAgora'); seguirAtt(); };
+    const nv = $('#attNav'); if (nv) nv.onclick = () => chamar('atualizarNavegador');
   }
   function abrir() { verAtt(); $('#pn').classList.add('on'); bt.style.display = 'none'; desenhar(); clearInterval(timer); timer = setInterval(() => { if (aba === 'inicio' || (aba === 'pvp' && pvpRodando)) desenhar(); }, 5000); }
   function fechar() { $('#pn').classList.remove('on'); bt.style.display = ''; clearInterval(timer); }
@@ -131,7 +142,7 @@
     const cp = $('#cp');
     const m = M();
     if (!m) { cp.innerHTML = '<div class="card"><div class="sub">Carregando o jogo…</div></div>'; return; }
-    if (aba === 'inicio') { cp.innerHTML = faixaAtt() + htmlInicio(); const ag = $('#attAgora'); if (ag) ag.onclick = () => chamar('atualizarAgora'); }
+    if (aba === 'inicio') { cp.innerHTML = faixaAtt() + htmlInicio(); ligarAtt(); }
     else if (aba === 'hunt') { cp.innerHTML = '<div class="card"><div class="sub">Calculando a melhor hunt…</div></div>'; cp.innerHTML = await htmlHunt(); }
     else if (aba === 'prox') { cp.innerHTML = '<div class="card"><div class="sub">Lendo as próximas hunts…</div></div>'; cp.innerHTML = await htmlProx(); }
     else if (aba === 'evo') { cp.innerHTML = '<div class="card"><div class="sub">Lendo os seus pokémon…</div></div>'; cp.innerHTML = await htmlEvo(); ligarEvo(); }
