@@ -421,7 +421,7 @@
     for (const e of entries) { const o = pvpBest(tb, c.atk, e.tipos), d = pvpBest(tb, e.atk, c.tipos); off += o * e.w; def += d * e.w; ws += e.w; if (o >= 2) forte.set(e.nome, 1); if (d >= 2) fraco.set(e.nome, 1); }
     off /= ws || 1; def /= ws || 1;
     const lvl = Math.min(1.5, (c.level || 1) / Math.max(1, refLevel));
-    return { score: off - def * 0.8 + lvl * 1.4 + (statSum(c.stats) / 600) * 0.5 + (c.aoe ? 0.25 : 0), forte: [...forte.keys()], fraco: [...fraco.keys()] };
+    return { score: off - def * 0.8 + lvl * 1.4 + (statSum(c.stats) / 600) * 0.5, forte: [...forte.keys()], fraco: [...fraco.keys()] };
   }
   function meusPvp(live, info) {
     if (!live) return [];
@@ -495,7 +495,7 @@
       if (!mine.length) return h + '<div class="card"><div class="sub">Não consegui ler os pokémon desta conta ainda. Espere o jogo carregar e abra de novo.</div></div>';
       const sug = sugerir(mine, entries, tb, refLevel);
       const time = sug.map((x) => x.c);
-      h += `<div class="card"><div class="t">Melhor time com o que você tem</div>${sug.map((x) => `<div class="ln"><span><b>${esc(x.c.nome)}</b> Nv ${nf(x.c.level)}${x.c.aoe ? ' · AoE' : ''}<br><span class="sub">${esc(x.c.tipos.map(tipo).join(' / '))} · ${x.c.alcance > 1 ? 'longe' : 'perto'} · bate forte em ${x.s.forte.length} do meta · apanha forte de ${x.s.fraco.length}</span></span></div>`).join('')}${mine.length < 5 ? `<div class="sub">Esta conta tem só ${mine.length} espécie(s): o time completo tem 5.</div>` : ''}<div class="sub">O time de verdade você monta no jogo (Editar time).</div></div>`;
+      h += `<div class="card"><div class="t">Melhor time com o que você tem</div>${sug.map((x) => `<div class="ln"><span><b>${esc(x.c.nome)}</b> Nv ${nf(x.c.level)}<br><span class="sub">${esc(x.c.tipos.map(tipo).join(' / '))} · ${x.c.alcance > 1 ? 'longe' : 'perto'} · bate forte em ${x.s.forte.length} do meta · apanha forte de ${x.s.fraco.length}</span></span></div>`).join('')}${mine.length < 5 ? `<div class="sub">Esta conta tem só ${mine.length} espécie(s): o time completo tem 5.</div>` : ''}<div class="sub">O time de verdade você monta no jogo (Editar time).</div></div>`;
       if (top.length) {
         const sims = await Promise.all(top.map((x) => simTime(time, arqTime(x, meta)).catch(() => null)));
         h += `<div class="card"><div class="t">Esse time contra os arquétipos do topo</div>${top.map((x, i) => { const e = sims[i]; return `<div class="ln"><span><span class="tier" style="background:${TIER_COR[x.tier]}">${x.tier}</span> <b>${esc(arqNome(x, meta))}</b><br><span class="sub">${x.n} no top · PR ${nf(x.pr)}</span></span><b class="${e == null ? '' : e >= 0.55 ? 'ok' : e >= 0.45 ? 'meh' : 'bad'}">${e == null ? '—' : pct(e)}</b></div>`; }).join('')}<div class="sub">Força = duelos 1×1 do próprio jogo (nível, IV, qualidade, potência, golpe, tipos e Z-Move) de cada um seu contra cada um do time mais bem colocado do arquétipo. Na luta real também contam posição e alcance.</div></div>`;
@@ -516,7 +516,7 @@
 
     // Comprar para o PvP: as ofertas reais dos pokémon mais fortes contra o meta (sem trava de nível no PvP).
     const f = LS('compraPvp', { valor: '', moeda: 'orb' });
-    h += `<div class="card"><div class="t">Comprar no Market para o PvP</div><div class="sub">No PvP não há trava de nível. O app procura AGORA as ofertas dos pokémon mais fortes contra o meta e avalia cada um à venda (nível, IV, shiny, AoE, Z-Move) no duelo do jogo contra o top.</div>
+    h += `<div class="card"><div class="t">Comprar no Market para o PvP</div><div class="sub">No PvP não há trava de nível. O app procura AGORA as ofertas dos pokémon mais fortes contra o meta e avalia cada um à venda (nível, IV, shiny, Z-Move; AoE não conta no PvP) no duelo do jogo contra o top.</div>
       <input class="in" id="pv" type="number" inputmode="numeric" placeholder="Quanto quer gastar?" value="${esc(f.valor)}">
       <select id="pm"><option value="orb" ${f.moeda === 'orb' ? 'selected' : ''}>em gemas 💎</option><option value="gold" ${f.moeda === 'gold' ? 'selected' : ''}>em coins</option></select>
       <button class="btn" id="pb" ${pvpMk && pvpMk.carregando ? 'disabled' : ''}>${pvpMk && pvpMk.carregando ? 'Procurando… (uns 40 s)' : 'Procurar no Market agora'}</button></div>`;
@@ -526,7 +526,7 @@
     const ord = lista.filter((o) => o.moeda === moeda && o.preco > 0 && o.preco <= valor && !o.retido && o.win >= 0.03).sort((x, y) => y.win - x.win || x.preco - y.preco);
     const pick = []; let gasto = 0;
     for (const o of ord) { if (pick.length >= 5) break; if (pick.some((q) => q.speciesId === o.speciesId) || gasto + o.preco > valor) continue; pick.push(o); gasto += o.preco; }
-    const linha = (o) => `<div class="ln"><span><b>${esc(o.nome)} · Nv ${nf(o.level)}${o.shiny ? ' ✨' : ''}</b><br><span class="sub">vence ${pct(o.win)} dos duelos contra o top${o.aoe ? ' · AoE' : ''}${o.el ? ' · Z ' + esc(tipo(o.el)) : ''} · vendedor ${esc(o.vendedor || '—')}</span></span><b class="${moeda === 'gold' ? 'gold' : ''}">${nf(o.preco)}<br><span class="sub">${nm}</span></b></div>`;
+    const linha = (o) => `<div class="ln"><span><b>${esc(o.nome)} · Nv ${nf(o.level)}${o.shiny ? ' ✨' : ''}</b><br><span class="sub">vence ${pct(o.win)} dos duelos contra o top${o.el ? ' · Z ' + esc(tipo(o.el)) : ''} · vendedor ${esc(o.vendedor || '—')}</span></span><b class="${moeda === 'gold' ? 'gold' : ''}">${nf(o.preco)}<br><span class="sub">${nm}</span></b></div>`;
     h += pick.length ? `<div class="card"><div class="t">Melhor compra · ${nf(gasto)} ${nm} (sobram ${nf(valor - gasto)})</div>${pick.map(linha).join('')}</div>` : `<div class="card"><div class="sub">Com ${nf(valor)} ${nm}, nada à venda agora vence duelos contra o top (eles são Nv ~${nf(meta.ref ? meta.ref.level : refLevel)}).</div></div>`;
     const resto = lista.filter((o) => o.moeda === moeda && !pick.includes(o)).sort((x, y) => y.win - x.win).slice(0, 8);
     if (resto.length) h += `<div class="card"><div class="t">Outras ofertas fortes (algumas acima do valor)</div>${resto.map(linha).join('')}</div>`;
