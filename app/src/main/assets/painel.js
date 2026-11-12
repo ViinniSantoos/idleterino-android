@@ -207,13 +207,16 @@
     if (!r.total) return '<div class="card"><div class="t">Esta conta ainda não tem casa</div><div class="sub">A casa sai do Professor Carvalho, no Centro Pokémon, com os Fragmentos de Chave que caem na Outland. Quando tiver uma, ela aparece aqui sozinha.</div></div>';
     if (!r.casas.length) return '<div class="card"><div class="sub">Nenhuma casa em uso. Só as casas EM USO (até 5) repartem XP.</div></div>';
     const pct = (m) => '+' + vir(Math.round((m - 1) * 1000) / 10) + '%';
-    const ativos = (r.partes || []).filter((x) => x.pk !== 1);
+    const ativos = (r.partes || []).filter((x) => x.pk !== 1 || x.tr !== 1);
     let h = `<div class="card" id="casasOk"><div class="t">⚡ Buffs de XP de pokémon agora${ativos.length ? ' · ×' + vir(Math.round(r.multPk * 100) / 100) : ''}</div>`;
-    h += ativos.length ? ativos.map((x) => `<div class="ln"><span>${esc(x.nome)}<br><span class="sub">${x.id === 'atrasados' ? `até o treinador chegar no Nv ${nf(x.alvo)}` : x.permanente ? 'permanente' : 'acaba em ' + tempoCasa(x.ate - Date.now())}</span></span><b class="ok">${pct(x.pk)}</b></div>`).join('')
-      : '<div class="sub">Nenhum buff de XP de pokémon ligado agora.</div>';
+    // "vou renovar" buff por buff, só nos que dá para comprar ou resgatar de novo.
+    const renova = (x) => (x.permanente || x.id === 'atrasados' ? '' : x.renovavel
+      ? `<label class="sw" style="font-size:12px;margin-top:4px"><span>vou renovar</span><input type="checkbox" data-renova="${esc(x.id)}" ${x.renovar ? 'checked' : ''}></label>`
+      : '<div class="sub">não dá para renovar</div>');
+    h += ativos.length ? ativos.map((x) => `<div class="ln" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><span>${esc(x.nome)}<br><span class="sub">${x.id === 'atrasados' ? `até o treinador chegar no Nv ${nf(x.alvo)}` : x.permanente ? 'permanente' : 'acaba em ' + tempoCasa(x.ate - Date.now())}</span></span><b class="ok">${x.pk !== 1 ? pct(x.pk) : pct(x.tr) + ' só treinador'}</b></div>${renova(x)}</div>`).join('')
+      : '<div class="sub">Nenhum buff de XP ligado agora.</div>';
     if (r.huntAgora) h += `<div class="sub">Hunt agora: ${esc(r.huntAgora.nome)} (Nv ${nf(r.huntAgora.nivel)}) · ~${nf(r.kph)} abates/h · o pokémon de batalha ganha ~${curto(r.xpPkAgoraH || 0)} XP/h${r.xpPkMedidoH ? ` (sessão real: ${curto(r.xpPkMedidoH)}/h)` : ''}. A casa recebe o XP já com os buffs.</div>`;
-    h += `<label class="sw"><span>Vou renovar os boosts</span><input type="checkbox" id="csRenovar" ${opc.renovar ? 'checked' : ''}></label>
-      <label class="sw"><span>Subir de hunt quando liberar</span><input type="checkbox" id="csSubir" ${opc.subir !== false ? 'checked' : ''}></label>
+    h += `<label class="sw"><span>Subir de hunt quando liberar</span><input type="checkbox" id="csSubir" ${opc.subir !== false ? 'checked' : ''}></label>
       <select id="csHoras">${[24, 20, 16, 12, 8, 4].map((x) => `<option value="${x}" ${Number(opc.horasDia || 24) === x ? 'selected' : ''}>${x === 24 ? 'farmando 24h por dia' : `farmando ${x}h por dia`}</option>`).join('')}</select></div>`;
     if (r.semHunt) h += '<div class="card"><div class="sub bad">Para estimar o tempo, a conta precisa estar caçando (o app usa o ritmo de abates da hunt de agora).</div></div>';
     if (!r.pokemons.length) h += '<div class="card"><div class="sub">As casas em uso estão sem pokémon. No jogo: botão Casa › Escolher pokémon.</div></div>';
@@ -235,7 +238,14 @@
   function ligarCasas() {
     const opc = LS('casasOpc', { renovar: false, subir: true, horasDia: 24 });
     const salvarOpc = () => { LSset('casasOpc', opc); desenhar(); };
-    const rn = $('#csRenovar'); if (rn) rn.onchange = () => { opc.renovar = rn.checked; salvarOpc(); };
+    raiz.querySelectorAll('[data-renova]').forEach((c) => {
+      c.onchange = () => {
+        // O antigo "renovar tudo" (true) vira a lista dos marcados na tela.
+        if (!opc.renovar || typeof opc.renovar !== 'object') { const m = {}; if (opc.renovar === true) raiz.querySelectorAll('[data-renova]').forEach((y) => { m[y.dataset.renova] = true; }); opc.renovar = m; }
+        if (c.checked) opc.renovar[c.dataset.renova] = true; else delete opc.renovar[c.dataset.renova];
+        salvarOpc();
+      };
+    });
     const sb = $('#csSubir'); if (sb) sb.onchange = () => { opc.subir = sb.checked; salvarOpc(); };
     const hs = $('#csHoras'); if (hs) hs.onchange = () => { opc.horasDia = Number(hs.value) || 24; salvarOpc(); };
     const gravar = (id, v, lv) => { const alvos = LS(chaveAlvos(), {}); const n = Math.floor(Number(v) || 0); if (n > lv) alvos[id] = n; else delete alvos[id]; LSset(chaveAlvos(), alvos); desenhar(); };
