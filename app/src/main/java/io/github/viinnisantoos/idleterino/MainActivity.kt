@@ -104,6 +104,28 @@ class MainActivity : Activity() {
         importarSeVeio(intent)
     }
 
+    // BARRAS DO SISTEMA (Shimoda, Galaxy S26, 13/11/2026: "não consigo clicar, tá embaixo dos botões do Android"): do
+    // Android 15 em diante o app é desenhado ATRÁS da barra de status e da barra de navegação (botões ou gestos). A tela
+    // inteira ganha uma margem do tamanho delas (e do recorte da câmera e do teclado aberto), então as abas de baixo
+    // ficam sempre acima dos botões do Android, em qualquer tamanho de celular. Nos Androids antigos o sistema já
+    // reserva esse espaço e a margem dá zero.
+    private fun respeitarBarrasDoSistema(raiz: View) {
+        raiz.setOnApplyWindowInsetsListener { v, ins ->
+            val esq: Int; val topo: Int; val dir: Int; val baixo: Int
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val b = ins.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout())
+                val tec = ins.getInsets(android.view.WindowInsets.Type.ime())
+                esq = b.left; topo = b.top; dir = b.right; baixo = maxOf(b.bottom, tec.bottom)
+            } else {
+                @Suppress("DEPRECATION")
+                run { esq = ins.systemWindowInsetLeft; topo = ins.systemWindowInsetTop; dir = ins.systemWindowInsetRight; baixo = ins.systemWindowInsetBottom }
+            }
+            v.setPadding(esq, topo, dir, baixo)
+            ins
+        }
+        raiz.requestApplyInsets()
+    }
+
     // ---------------- tela: área das contas + abas embaixo ----------------
     private fun montarTela() {
         val raiz = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.parseColor("#0B0A16")) }
@@ -134,6 +156,7 @@ class MainActivity : Activity() {
         barra.addView(tabKick, LinearLayout.LayoutParams(0, dp(48), 1f))
         raiz.addView(barra, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         setContentView(raiz)
+        respeitarBarrasDoSistema(raiz)
         plataformas.forEach { it.iniciar() }
         laco.post(eloCiclo)
     }
