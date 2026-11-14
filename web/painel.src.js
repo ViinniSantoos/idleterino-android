@@ -108,7 +108,7 @@
   bt.addEventListener('pointerup', () => { if (arr && !arr.moveu) abrir(); else LSset('pos', pos); arr = null; });
 
   let aba = LS('aba', 'inicio');
-  const ABAS = [['inicio', 'Início'], ['hunt', 'Melhor hunt'], ['prox', 'Próximas'], ['evo', 'Evoluir'], ['casas', '🏠 Casas'], ['comprar', 'Comprar'], ['pvp', 'PvP'], ['contas', 'Contas'], ['ajustes', 'Ajustes'], ['apoio', '❤ Apoiar']];
+  const ABAS = [['inicio', 'Início'], ['hunt', 'Melhor hunt'], ['prox', 'Próximas'], ['evo', 'Evoluir'], ['casas', '🏠 Casas'], ['boss', '🧮 Boss'], ['comprar', 'Comprar'], ['pvp', 'PvP'], ['contas', 'Contas'], ['ajustes', 'Ajustes'], ['apoio', '❤ Apoiar']];
   let timer = null;
   // Atualização (igual ao PC): o app baixa sozinho; aqui aparece a faixa com "Atualizar agora".
   let att = null;
@@ -147,6 +147,7 @@
     else if (aba === 'prox') { cp.innerHTML = '<div class="card"><div class="sub">Lendo as próximas hunts…</div></div>'; cp.innerHTML = await htmlProx(); }
     else if (aba === 'evo') { cp.innerHTML = '<div class="card"><div class="sub">Lendo os seus pokémon…</div></div>'; cp.innerHTML = await htmlEvo(); ligarEvo(); }
     else if (aba === 'casas') { if (!cp.querySelector('#casasOk')) cp.innerHTML = '<div class="card"><div class="sub">Calculando as casas…</div></div>'; const h = await htmlCasas(); if (aba === 'casas') { cp.innerHTML = h; ligarCasas(); } }
+    else if (aba === 'boss') { if (!cp.querySelector('#bsOk')) cp.innerHTML = '<div class="card"><div class="sub">Lendo os bosses e os preços do Market…</div></div>'; const h = await htmlBoss(); if (aba === 'boss') { cp.innerHTML = h; ligarBoss(); } }
     else if (aba === 'comprar') { cp.innerHTML = htmlComprar(); ligarComprar(); }
     else if (aba === 'pvp') { if (!pvpRodando) cp.innerHTML = '<div class="card"><div class="sub">Lendo o PvP…</div></div>'; const h = await htmlPvp(); if (aba === 'pvp') { cp.innerHTML = h; ligarPvp(); } }
     else if (aba === 'ajustes') { cp.innerHTML = htmlAjustes(await chamar('farmLigado')); ligarAjustes(); }
@@ -251,6 +252,78 @@
     const gravar = (id, v, lv) => { const alvos = LS(chaveAlvos(), {}); const n = Math.floor(Number(v) || 0); if (n > lv) alvos[id] = n; else delete alvos[id]; LSset(chaveAlvos(), alvos); desenhar(); };
     raiz.querySelectorAll('[data-alvo]').forEach((i) => { i.onchange = () => gravar(i.dataset.alvo, i.value, Number(i.dataset.lv) || 0); });
     raiz.querySelectorAll('[data-set]').forEach((b) => { b.onclick = () => { const i = raiz.querySelector(`[data-alvo="${b.dataset.set}"]`); gravar(b.dataset.set, b.dataset.v, Number(i && i.dataset.lv) || 0); }; });
+  }
+
+  // ---------- 🧮 Calculadora Boss (mesmo cálculo do PC: bosses, chances e taxa do jogo; preços de agora no Market) ----------
+  let bossR = null;
+  const bossNum = (s) => { const t = String(s == null ? '' : s).trim().replace(/\s/g, ''); if (!t) return null; const v = Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t); return Number.isFinite(v) && v >= 0 ? v : NaN; };
+  const n2 = (v, c = 2) => (v == null || !Number.isFinite(v) ? '—' : Number(v).toLocaleString('pt-BR', { minimumFractionDigits: c, maximumFractionDigits: c }));
+  async function htmlBoss() {
+    const o = LS('bossOpc', { moeda: 'orb', boss: null, tokens: '', custo: '', tokPreco: '', qtds: {}, precos: {}, taxa: '' });
+    if (!bossR || bossR.moeda !== o.moeda || Date.now() - bossR.lido > 2 * 60000) {
+      const r = await M().pve('boss', { moeda: o.moeda });
+      if (!r || !r.pronto) { bossR = null; return `<div class="card"><div class="t">Calculadora Boss</div><div class="sub">${r && r.erro ? 'Erro: ' + esc(r.erro) : 'O jogo ainda não mandou a lista de bosses (ela chega quando a conta entra). Espere uns segundos e toque de novo na aba.'}</div><button class="btn" id="bsDeNovo">Tentar de novo</button></div>`; }
+      bossR = { ...r, lido: Date.now() };
+    }
+    const r = bossR, m = o.moeda, un = m === 'orb' ? 'gemas' : 'coins';
+    const bosses = r.bosses.slice().sort((a, b) => a.level - b.level);
+    if (!o.boss || !bosses.some((b) => b.key === o.boss)) { o.boss = (bosses.find((b) => b.liberado) || bosses[0]).key; LSset('bossOpc', o); }
+    const b = bosses.find((x) => x.key === o.boss), tok = b.token || {};
+    const v = (x) => (m === 'orb' ? n2(x) + ' gemas' : nf(Math.round(x)) + ' coins');
+    const campo = (rot, id, val, ph, dica) => `<div><div class="sub"><b>${esc(rot)}</b></div><input class="in" inputmode="decimal" data-bs="${id}" value="${esc(val == null ? '' : val)}" placeholder="${esc(ph || '')}">${dica ? `<div class="sub">${dica}</div>` : ''}</div>`;
+    let h = `<div class="card" id="bsOk"><div class="t">🧮 Sua sessão de boss</div><div class="sub">Os preços vêm do Market agora e a taxa é a do jogo. Digite só o que conseguiu (e troque qualquer preço).</div>
+      <select id="bsBoss">${bosses.map((x) => `<option value="${esc(x.key)}" ${x.key === o.boss ? 'selected' : ''}>${esc(x.nome)} · Nv ${nf(x.level)}${x.liberado ? '' : ' (seu nível não libera)'}</option>`).join('')}</select>
+      <div class="g"><select id="bsMoeda"><option value="orb" ${m === 'orb' ? 'selected' : ''}>em gemas 💎</option><option value="gold" ${m === 'gold' ? 'selected' : ''}>em coins</option></select><button class="btn g2" id="bsAtt">↻ Preços</button></div>
+      <div class="g">${campo(`Preço do ${tok.nome || 'token'}`, 'tokPreco', o.tokPreco, tok.preco != null ? String(tok.preco) : '', tok.preco != null ? 'Market: ' + v(tok.preco) : 'sem preço: digite')}${campo('Tokens usados', 'tokens', o.tokens, 'ex.: 476')}</div>
+      <div class="g">${campo('…ou custo total (opcional)', 'custo', o.custo, '')}${campo('Taxa do market (%)', 'taxa', o.taxa, 'automática')}</div>`;
+    for (const d of b.drops) {
+      const it = r.itens[d.itemId] || {};
+      h += `<div class="g">${campo('Qtd de ' + d.nome, 'q' + d.itemId, (o.qtds || {})[d.itemId], '0', `chance ${n2(d.chance * 100, d.chance < 0.001 ? 4 : 2)}% por luta`)}${campo('Preço de ' + d.nome, 'p' + d.itemId, (o.precos || {})[d.itemId], it.preco != null ? String(it.preco) : '', it.preco != null ? `agora ${it.agora != null ? v(it.agora) : '—'}${it.media != null ? ' · média 7d ' + v(it.media) : ''}` : 'sem preço: digite')}</div>`;
+    }
+    h += '<div id="bsRes"></div></div>';
+    // Qual boss compensa (média por luta).
+    const ord = bosses.slice().sort((a, z) => (z.liberado - a.liberado) || ((z.lucroLuta ?? -1e9) - (a.lucroLuta ?? -1e9)));
+    h += `<div class="card"><div class="t">👹 Qual boss compensa (média por luta)</div><div class="sub">Chance do jogo × preço de agora (sem a taxa) − o token. É a média de muitas lutas: numa sessão curta a sorte pesa.</div>
+      ${ord.map((x) => `<div class="ln"><span><b>${esc(x.nome)} · Nv ${nf(x.level)}</b>${x.liberado ? '' : ` <span class="tag">libera Nv ${nf(x.minNivel)}</span>`}<br><span class="sub">${x.drops.map((d) => `${esc(d.nome)} ${n2(d.chance * 100, d.chance < 0.001 ? 4 : 2)}%`).join(' · ')}${x.faltaPreco ? ' · ⚠ item sem preço' : ''}</span></span><b class="${x.lucroLuta != null && x.lucroLuta >= 0 ? 'ok' : 'bad'}">${x.lucroLuta == null ? '—' : (x.lucroLuta >= 0 ? '+' : '−') + n2(Math.abs(x.lucroLuta), m === 'orb' ? 3 : 0)}<br><span class="sub">por luta${x.roi != null ? ' · ' + n2(x.roi, 1) + '%' : ''}</span></b></div>`).join('')}</div>`;
+    return h;
+  }
+  function contaBoss() {
+    const el = $('#bsRes'); if (!el || !bossR) return;
+    const o = LS('bossOpc', {}), r = bossR, m = o.moeda || 'orb';
+    const b = r.bosses.find((x) => x.key === o.boss); if (!b) return;
+    const tok = b.token || {};
+    const v = (x) => (m === 'orb' ? n2(x) + ' gemas' : nf(Math.round(x)) + ' coins');
+    const tp = bossNum(o.tokPreco) ?? tok.preco, nt = bossNum(o.tokens), cm = bossNum(o.custo), tx = bossNum(o.taxa);
+    const vals = [tp, nt, cm, tx, ...b.drops.map((d) => bossNum((o.qtds || {})[d.itemId])), ...b.drops.map((d) => bossNum((o.precos || {})[d.itemId]))];
+    if (vals.some((x) => Number.isNaN(x)) || (tx != null && tx >= 100)) { el.innerHTML = '<div class="sub bad">⚠ Confira os números (use 3, 3,5 ou 1.441,5).</div>'; return; }
+    const faixa = (p) => { if (tx != null) return tx; if (m !== 'orb') return r.taxa.gold; for (const f of r.taxa.faixasOrb) if (f.ate == null || p <= f.ate) return f.pct; return 7.5; };
+    const custo = cm != null && cm > 0 ? cm : (tp || 0) * (nt || 0);
+    let bruto = 0, taxa = 0;
+    const pd = b.drops.map((d) => { const q = bossNum((o.qtds || {})[d.itemId]) || 0; const p = bossNum((o.precos || {})[d.itemId]) ?? (r.itens[d.itemId] || {}).preco ?? 0; const pct = faixa(p); bruto += p * q; taxa += (p * q * pct) / 100; return { d, q, p, pct }; });
+    const liq = bruto - taxa, lucro = liq - custo;
+    const lutas = nt ? nt / (tok.qtd || 1) : 0;
+    const eq = pd.filter((x) => x.q > 0).map((x) => { const outros = pd.filter((y) => y !== x).reduce((s, y) => s + y.p * y.q * (1 - y.pct / 100), 0); const e = (custo - outros) / (x.q * (1 - x.pct / 100)); return `${esc(x.d.nome)}: ${e <= 0 ? 'qualquer preço' : v(e)}`; }).join(' · ');
+    el.innerHTML = `<div class="ln"><span>Custo dos tokens</span><b>${v(custo)}</b></div><div class="ln"><span>Receita bruta</span><b>${v(bruto)}</b></div><div class="ln"><span>Taxa do market</span><b>− ${v(taxa)}</b></div><div class="ln"><span>Receita líquida</span><b>${v(liq)}</b></div>
+      ${nt ? `<div class="ln"><span>Lucro por token</span><b>${v(lucro / nt)}</b></div>` : ''}${eq ? `<div class="sub">Preço mínimo p/ não ter prejuízo: ${eq}</div>` : ''}
+      ${lutas ? `<div class="sub">Pela chance do jogo, com esses tokens: ${b.drops.map((d) => `~${n2(d.chance * lutas * (d.qtd || 1), 1)} ${esc(d.nome)}`).join(' · ')} → lucro médio ${v(lutas * (b.evLuta || 0) - custo)}</div>` : ''}
+      <div class="g"><div class="k"><span>LUCRO</span><b class="${lucro >= 0 ? 'ok' : 'bad'}">${lucro >= 0 ? '+' : '−'}${m === 'orb' ? n2(Math.abs(lucro)) : nf(Math.round(Math.abs(lucro)))}</b></div><div class="k"><span>ROI</span><b class="${lucro >= 0 ? 'ok' : 'bad'}">${custo > 0 ? (lucro >= 0 ? '+' : '−') + n2(Math.abs((lucro / custo) * 100), 1) + '%' : '—'}</b></div></div>`;
+  }
+  function ligarBoss() {
+    const dn = $('#bsDeNovo'); if (dn) { dn.onclick = () => desenhar(); return; }
+    const o = LS('bossOpc', { moeda: 'orb', qtds: {}, precos: {} });
+    const sb = $('#bsBoss'); if (sb) sb.onchange = () => { o.boss = sb.value; o.qtds = {}; o.precos = {}; o.tokPreco = ''; LSset('bossOpc', o); desenhar(); };
+    const sm = $('#bsMoeda'); if (sm) sm.onchange = () => { o.moeda = sm.value; o.precos = {}; o.tokPreco = ''; LSset('bossOpc', o); desenhar(); };
+    const at = $('#bsAtt'); if (at) at.onclick = () => { bossR = null; desenhar(); };
+    raiz.querySelectorAll('[data-bs]').forEach((i) => {
+      i.oninput = () => {
+        const k = i.dataset.bs;
+        if (k[0] === 'q' && /^\d+$/.test(k.slice(1))) o.qtds = { ...(o.qtds || {}), [k.slice(1)]: i.value };
+        else if (k[0] === 'p' && /^\d+$/.test(k.slice(1))) o.precos = { ...(o.precos || {}), [k.slice(1)]: i.value };
+        else o[k] = i.value;
+        LSset('bossOpc', o); contaBoss();
+      };
+    });
+    contaBoss();
   }
 
   // ---------- Evoluir para qual? (os IVs do SEU pokémon em cada forma, nas hunts da sua região e da próxima) ----------
