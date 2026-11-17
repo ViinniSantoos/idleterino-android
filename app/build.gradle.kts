@@ -13,8 +13,8 @@ android {
         applicationId = "io.github.viinnisantoos.idleterino"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.3.11"
+        versionCode = 17
+        versionName = "0.3.12"
     }
 
     // A chave de assinatura fica FORA do Git (keystore.properties + idleterino.jks na raiz do projeto).
