@@ -141,6 +141,9 @@
     raiz.querySelectorAll('#tabs button').forEach((b) => { b.onclick = () => { aba = b.dataset.a; LSset('aba', aba); desenhar(); }; });
     const cp = $('#cp');
     const m = M();
+    // Contas e Ajustes funcionam já na tela de login (é ali que se cola o código do PC).
+    if (aba === 'contas') { cp.innerHTML = htmlContas((await chamar('contas')) || []); ligarContas(); return; }
+    if (aba === 'ajustes') { const [f, tl] = await Promise.all([chamar('farmLigado'), chamar('telaLigada')]); cp.innerHTML = htmlAjustes(f, tl); ligarAjustes(); return; }
     if (!m) { cp.innerHTML = '<div class="card"><div class="sub">Carregando o jogo…</div></div>'; return; }
     if (aba === 'inicio') { cp.innerHTML = faixaAtt() + htmlInicio(); ligarAtt(); }
     else if (aba === 'hunt') { cp.innerHTML = '<div class="card"><div class="sub">Calculando a melhor hunt…</div></div>'; cp.innerHTML = await htmlHunt(); }
@@ -150,7 +153,7 @@
     else if (aba === 'boss') { if (!cp.querySelector('#bsOk')) cp.innerHTML = '<div class="card"><div class="sub">Lendo os bosses e os preços do Market…</div></div>'; const h = await htmlBoss(); if (aba === 'boss') { cp.innerHTML = h; ligarBoss(); } }
     else if (aba === 'comprar') { cp.innerHTML = htmlComprar(); ligarComprar(); }
     else if (aba === 'pvp') { if (!pvpRodando) cp.innerHTML = '<div class="card"><div class="sub">Lendo o PvP…</div></div>'; const h = await htmlPvp(); if (aba === 'pvp') { cp.innerHTML = h; ligarPvp(); } }
-    else if (aba === 'ajustes') { cp.innerHTML = htmlAjustes(await chamar('farmLigado')); ligarAjustes(); }
+    else if (aba === 'ajustes') { const [f, tl] = await Promise.all([chamar('farmLigado'), chamar('telaLigada')]); cp.innerHTML = htmlAjustes(f, tl); ligarAjustes(); }
     else if (aba === 'contas') { cp.innerHTML = htmlContas((await chamar('contas')) || []); ligarContas(); }
     else { cp.innerHTML = htmlApoio(); ligarApoio(); }
   }
@@ -627,19 +630,23 @@
     const t = M() && M().treinador();
     return `<div class="card"><div class="t">Suas contas no celular</div>${l.length ? l.map((c) => `<div class="ln"><span><b>${esc(c.nick)}</b>${c.ativa ? ' <span class="tag">⭐ principal</span>' : ' <span class="tag">ALT</span>'}</span><span>${c.ativa || (t && t.nick === c.nick) ? '' : `<button class="btn g2" data-usar="${esc(c.nick)}">Tornar principal</button>`} <button class="btn g2" data-tirar="${esc(c.nick)}">×</button></span></div>`).join('') : '<div class="sub">Nenhuma conta guardada ainda.</div>'}
       <div class="sub">A principal fica na aba ⭐ Principal; as outras (até 3) farmam juntas na aba 👥 ALTs, no modo ULTRA (leve). Cada conta conectada aqui sai do PC, igual quando você abre no navegador.</div></div>
-      <div class="card"><div class="t">Trazer as contas do PC</div><div class="sub">No PC: Idleterino > Ajustes > "Levar contas para o celular". Aponte a câmera do celular para o QR, toque no link e digite o PIN de 8 números. As contas entram já logadas, sem senha.</div></div>
+      <div class="card"><div class="t">Trazer as contas do PC</div><div class="sub">No PC: Idleterino > Ajustes > "Levar contas para o celular". Aponte a câmera do celular para o QR, toque no link e digite o PIN de 8 números. As contas entram já logadas, sem senha.</div>
+        <div class="sub"><b>Apareceu "Não é possível acessar esse site"?</b> A rede de casa não deixa o celular falar com o PC. No PC, toque em "Não abriu no celular?" e copie o código (ou leia o QR do código com a câmera e toque em "Copiar texto"). Depois toque aqui:</div>
+        <button class="btn" id="colar">Colar o código do PC</button></div>
       <div class="card"><button class="btn g2" id="nova">Entrar em outra conta (login do jogo)</button></div>`;
   }
   function ligarContas() {
     raiz.querySelectorAll('[data-usar]').forEach((b) => { b.onclick = () => { chamar('trocarConta', { nick: b.dataset.usar }); fechar(); }; });
     raiz.querySelectorAll('[data-tirar]').forEach((b) => { b.onclick = async () => { await chamar('removerConta', { nick: b.dataset.tirar }); desenhar(); }; });
     const n = $('#nova'); if (n) n.onclick = () => { chamar('novaConta'); fechar(); };
+    const cl = $('#colar'); if (cl) cl.onclick = () => chamar('colarCodigo');
   }
 
-  function htmlAjustes(farm) {
+  function htmlAjustes(farm, telaLig) {
     const av = LS('avisos', { shiny: true, nivel: false, conexao: true });
     return `<div class="card"><div class="sub">Com o app aberto, tudo segue farmando mesmo quando você vai para outro app (por isso a notificação fixa). Para parar tudo, feche o Idleterino: tire ele dos recentes ou toque em "Fechar o Idleterino" na notificação.</div>
-        <div class="sw"><span><b>Farmar com a tela desligada</b><br><span class="sub">Segue conectado com o celular bloqueado. Gasta mais bateria.</span></span><input type="checkbox" id="farm" ${farm ? 'checked' : ''}></div></div>
+        <div class="sw"><span><b>Farmar com a tela desligada</b><br><span class="sub">Segue conectado com o celular bloqueado. Gasta mais bateria. Se ainda cair, libere o Idleterino na economia de bateria do celular (Configurações › Apps › Idleterino › Bateria › Sem restrições).</span></span><input type="checkbox" id="farm" ${farm ? 'checked' : ''}></div>
+        <div class="sw"><span><b>Manter a tela ligada</b><br><span class="sub">O jeito mais garantido: a tela não apaga sozinha. Depois de 1 min sem tocar ela fica preta, com o brilho no mínimo, e o jogo segue farmando por baixo. Um toque acorda. Bom com o celular no carregador.</span></span><input type="checkbox" id="telaLig" ${telaLig ? 'checked' : ''}></div></div>
       <div class="card"><div class="t">Avisos no celular</div>
         <div class="sw"><span>✨ Shiny visto ou capturado</span><input type="checkbox" data-av="shiny" ${av.shiny ? 'checked' : ''}></div>
         <div class="sw"><span>⬆ Subiu de nível</span><input type="checkbox" data-av="nivel" ${av.nivel ? 'checked' : ''}></div>
@@ -648,6 +655,7 @@
   }
   function ligarAjustes() {
     const f = $('#farm'); if (f) f.onchange = () => chamar('farm', { ligar: f.checked });
+    const tl = $('#telaLig'); if (tl) tl.onchange = () => chamar('setTelaLigada', { ligar: tl.checked });
     raiz.querySelectorAll('[data-av]').forEach((c) => { c.onchange = () => { const av = LS('avisos', { shiny: true, nivel: false, conexao: true }); av[c.dataset.av] = c.checked; LSset('avisos', av); }; });
     const a = $('#att'); if (a) a.onclick = () => chamar('verificarAtualizacao');
   }

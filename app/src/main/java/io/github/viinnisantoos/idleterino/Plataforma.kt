@@ -159,6 +159,8 @@ class Plataforma(private val a: MainActivity, val ns: String, private val fundo:
     @SuppressLint("SetJavaScriptEnabled")
     private fun novaWeb(): WebView {
         val w = WebView(a)
+        // Com a tela apagada o Android não congela o navegador interno (senão a live para de contar).
+        w.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
         if (perfil != null) { ProfileStore.getInstance().getOrCreateProfile(perfil); WebViewCompat.setProfile(w, perfil) }
         val s = w.settings
         s.javaScriptEnabled = true

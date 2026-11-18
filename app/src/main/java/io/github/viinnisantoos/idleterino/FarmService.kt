@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.net.wifi.WifiManager
 
 /**
  * Enquanto o app está aberto (na tela ou atrás de outro app), este serviço em primeiro plano (com a notificação fixa que o
@@ -19,6 +20,8 @@ import android.os.PowerManager
  */
 class FarmService : Service() {
     private var lock: PowerManager.WakeLock? = null
+    private var wifi: WifiManager.WifiLock? = null
+    private fun soltarWifi() { wifi?.let { try { if (it.isHeld) it.release() } catch (_: Exception) {} }; wifi = null }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -39,6 +42,13 @@ class FarmService : Service() {
         if (travar && lock == null) {
             lock = (getSystemService(Context.POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "idleterino:farm").apply { setReferenceCounted(false); acquire() }
         } else if (!travar) { lock?.let { if (it.isHeld) it.release() }; lock = null }
+        // Vários celulares desligam o Wi-Fi uns minutos depois de apagar a tela (o jogo cai junto): segura o Wi-Fi ligado.
+        if (travar && wifi == null) {
+            try {
+                @Suppress("DEPRECATION")
+                wifi = (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "idleterino:farm").apply { setReferenceCounted(false); acquire() }
+            } catch (_: Exception) {}
+        } else if (!travar) soltarWifi()
         ligado = true
         return START_NOT_STICKY
     }
@@ -52,6 +62,7 @@ class FarmService : Service() {
         ligado = false
         lock?.let { if (it.isHeld) it.release() }
         lock = null
+        soltarWifi()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         android.os.Process.killProcess(android.os.Process.myPid())
@@ -61,6 +72,7 @@ class FarmService : Service() {
         ligado = false
         lock?.let { if (it.isHeld) it.release() }
         lock = null
+        soltarWifi()
         super.onDestroy()
     }
 

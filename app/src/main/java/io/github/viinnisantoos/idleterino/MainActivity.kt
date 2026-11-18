@@ -91,6 +91,8 @@ class MainActivity : Activity() {
     private val laco = Handler(Looper.getMainLooper())
     private val falhas = mutableMapOf<WebView, Int>()
     private var redeCb: ConnectivityManager.NetworkCallback? = null
+    private lateinit var escuro: TextView
+    private var engolirToque = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -155,7 +157,16 @@ class MainActivity : Activity() {
         barra.addView(tabTwitch, LinearLayout.LayoutParams(0, dp(48), 1f))
         barra.addView(tabKick, LinearLayout.LayoutParams(0, dp(48), 1f))
         raiz.addView(barra, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        setContentView(raiz)
+        // "Manter a tela ligada": por cima de tudo, uma tela PRETA que entra depois de 1 min sem toque (com o brilho no
+        // mínimo). O jogo continua "na tela" por baixo (nada congela) e gasta pouca bateria; um toque acorda.
+        val janela = FrameLayout(this)
+        janela.addView(raiz, FrameLayout.LayoutParams(cheio))
+        escuro = TextView(this).apply {
+            setBackgroundColor(Color.BLACK); setTextColor(Color.parseColor("#3A3550")); textSize = 13f; gravity = Gravity.CENTER
+            text = "Idleterino farmando\ntoque para acordar a tela"; visibility = View.GONE; isClickable = true
+        }
+        janela.addView(escuro, FrameLayout.LayoutParams(cheio))
+        setContentView(janela)
         respeitarBarrasDoSistema(raiz)
         plataformas.forEach { it.iniciar() }
         laco.post(eloCiclo)
@@ -197,6 +208,40 @@ class MainActivity : Activity() {
         mostrar(if (contas.size > 1 || aba != "alts") aba else "principal")
         // A principal abre na hora; as ALTs logo depois, uma a cada 1,5 s (não pede tudo de uma vez).
         contas.forEachIndexed { i, c -> laco.postDelayed({ if (contas.contains(c)) c.web.loadUrl(jogo) }, i * 1500L) }
+        acordarTela() // o removeCallbacks lá em cima também tirou o "escurecer em 1 min"
+    }
+
+    // ---------------- "Manter a tela ligada" (17/11/2026: "o celular desliga a tela e para de farmar") ----------------
+    private var telaLigada: Boolean
+        get() = getSharedPreferences("app", Context.MODE_PRIVATE).getBoolean("telaLigada", false)
+        set(v) { getSharedPreferences("app", Context.MODE_PRIVATE).edit().putBoolean("telaLigada", v).apply() }
+    private val escurecer = object : Runnable {
+        override fun run() {
+            if (!telaLigada) return
+            if (escuro.visibility != View.VISIBLE) {
+                escuro.visibility = View.VISIBLE
+                window.attributes = window.attributes.apply { screenBrightness = 0.01f }
+            }
+            // O texto muda de lugar a cada minuto (tela preta parada por horas pode marcar a tela).
+            escuro.translationY = ((Math.random() - .5) * escuro.height * .7).toFloat()
+            laco.postDelayed(this, 60_000L)
+        }
+    }
+    private fun acordarTela() {
+        laco.removeCallbacks(escurecer)
+        if (escuro.visibility == View.VISIBLE) {
+            escuro.visibility = View.GONE
+            window.attributes = window.attributes.apply { screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE }
+        }
+        if (telaLigada) { window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); laco.postDelayed(escurecer, 60_000L) }
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
+        // Com a tela preta, o toque só acorda (não clica no jogo sem querer).
+        if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) engolirToque = escuro.visibility == View.VISIBLE
+        if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN || ev.actionMasked == android.view.MotionEvent.ACTION_UP) acordarTela()
+        if (engolirToque) { if (ev.actionMasked == android.view.MotionEvent.ACTION_UP || ev.actionMasked == android.view.MotionEvent.ACTION_CANCEL) engolirToque = false; return true }
+        return super.dispatchTouchEvent(ev)
     }
 
     /** Cada ALT: uma faixa com o nick e "Ampliar", e o jogo embaixo. */
@@ -235,6 +280,11 @@ class MainActivity : Activity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun criarWeb(perfil: String?, nick: String?, alt: Boolean): WebView {
         val web = WebView(this)
+        // TELA APAGADA (17/11/2026, "quando o celular desliga a tela ele para de farmar"): por padrão o Android rebaixa o
+        // processo do navegador interno quando ele some da tela, e o sistema congela/mata esse processo — o jogo cai.
+        // Prioridade IMPORTANTE e sem abrir mão dela fora da tela: ele segue com a mesma prioridade do app (serviço em
+        // primeiro plano).
+        web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
         if (perfil != null) { ProfileStore.getInstance().getOrCreateProfile(perfil); WebViewCompat.setProfile(web, perfil) }
         val s = web.settings
         s.javaScriptEnabled = true
@@ -336,6 +386,9 @@ class MainActivity : Activity() {
                 "aviso" -> { val quem = nickDaView.takeIf { it.isNotBlank() && contas.size > 1 }?.let { "$it · " } ?: ""; Avisos.mostrar(this, (quem + d.optString("titulo")).take(80), d.optString("texto").take(300)); true }
                 "farmLigado" -> telaDesligada
                 "farm" -> { telaDesligada = d.optBoolean("ligar"); FarmService.ligar(this, telaDesligada); if (telaDesligada) pedirSemEconomiaDeBateria(); true }
+                "telaLigada" -> telaLigada
+                "setTelaLigada" -> { telaLigada = d.optBoolean("ligar"); acordarTela(); true }
+                "colarCodigo" -> { colarCodigoDoPc(); true }
                 "atualizacao" -> Atualizacao.estado()
                 "atualizarAgora" -> { Atualizacao.instalar(this); true }
                 "atualizarNavegador" -> { Atualizacao.baixarPeloNavegador(this); true }
@@ -366,6 +419,24 @@ class MainActivity : Activity() {
         val d = i?.getStringExtra("d") ?: return
         i.removeExtra("d")
         if (!Contas.pacoteValido(d)) { aviso("Este link não é um QR válido do Idleterino. Gere outro no PC."); return }
+        pedirPin(d)
+    }
+
+    // QR que não abre no celular (rede de casa que separa os aparelhos, firewall do PC…): o PC mostra o CÓDIGO (o mesmo
+    // pacote criptografado, que só abre com o PIN). A pessoa copia (câmera › copiar texto, ou manda para si mesma) e toca
+    // em "Colar o código do PC". Quem lê a área de transferência é o APP, não a página: o pacote nunca passa pelo jogo.
+    private fun colarCodigoDoPc() {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val txt = try { cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString() } catch (_: Exception) { null } ?: ""
+        val d = Regex("c2\\.[A-Za-z0-9_-]{40,}").find(txt)?.value
+        if (d == null || !Contas.pacoteValido(d)) {
+            aviso("Não achei o código do PC na área de transferência.\n\nNo PC: Levar para o celular › Gerar › \"Não abriu no celular?\" › copie o código (ou leia o QR do código com a câmera e toque em \"Copiar texto\"). Depois volte aqui e toque em \"Colar o código do PC\".")
+            return
+        }
+        pedirPin(d)
+    }
+
+    private fun pedirPin(d: String) {
         val campo = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD; hint = "PIN de 8 números" }
         val dlg = AlertDialog.Builder(this)
             .setTitle("Trazer as contas do PC")
@@ -402,7 +473,9 @@ class MainActivity : Activity() {
 
     /** "Tela desligada" = o modo farm de antes (segura o processador com a tela apagada). */
     private var telaDesligada: Boolean
-        get() = getSharedPreferences("app", Context.MODE_PRIVATE).getBoolean("telaDesligada", false)
+        // Ligado de fábrica desde a 0.3.13: o app existe para farmar, e muita gente não achava a opção e perdia o farm
+        // ao apagar a tela. Quem desligou na mão continua desligado (a escolha fica salva).
+        get() = getSharedPreferences("app", Context.MODE_PRIVATE).getBoolean("telaDesligada", true)
         set(v) { getSharedPreferences("app", Context.MODE_PRIVATE).edit().putBoolean("telaDesligada", v).apply() }
 
     override fun onStart() {
@@ -421,6 +494,10 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         contas.forEach { it.web.onResume() }
+        acordarTela()
+        // Uma vez só: sem liberar a economia de bateria, vários celulares (Xiaomi, Samsung, Motorola) matam o jogo no bolso.
+        val pref = getSharedPreferences("app", Context.MODE_PRIVATE)
+        if (telaDesligada && !pref.getBoolean("pediuBateria", false)) { pref.edit().putBoolean("pediuBateria", true).apply(); pedirSemEconomiaDeBateria() }
     }
 
     @Deprecated("Deprecated in Java")
