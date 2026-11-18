@@ -80,6 +80,8 @@ class Plataforma(private val a: MainActivity, val ns: String, private val fundo:
     private class Estado {
         var nome = ""; var live = false; var viewers = 0; var pontos: Long? = null; var ganho = 0L
         var bau = false; var erro: String? = null; var desde = 0L; var vistoEm = 0L; var ultimoGanho = 0L
+        // A conta é sub do canal: rende mais pontos (Twitch: até 2×; Kick: o dobro) — entra na frente, igual ao PC.
+        var sub = false
     }
     private val estado = HashMap<String, Estado>()
     private fun est(s: String) = estado.getOrPut(s) { Estado() }
@@ -242,7 +244,7 @@ class Plataforma(private val a: MainActivity, val ns: String, private val fundo:
         if (twitch) lerTwitch(fim) else lerKick(fim)
     }
 
-    private val CAMPOS = "login displayName stream{ viewersCount } channel{ self{ communityPoints{ balance availableClaim{ id } } } }"
+    private val CAMPOS = "login displayName stream{ viewersCount } self{ subscriptionBenefit{ tier } } channel{ self{ communityPoints{ balance availableClaim{ id } } } }"
     private fun lerTwitch(fim: () -> Unit) {
         val token = cookie("auth-token"); val dev = cookie("unique_id")
         val partes = canais().filter { slugOk.matches(it) }.chunked(10)
@@ -273,7 +275,8 @@ class Plataforma(private val a: MainActivity, val ns: String, private val fundo:
         val st = u.optJSONObject("stream")
         s.live = st != null
         s.viewers = st?.optInt("viewersCount") ?: 0
-        val cp = u.optJSONObject("channel")?.optJSONObject("self")?.optJSONObject("communityPoints")
+        s.sub = u.optJSONObject("self")?.optJSONObject("subscriptionBenefit") != null
+        val cp =u.optJSONObject("channel")?.optJSONObject("self")?.optJSONObject("communityPoints")
         s.bau = cp?.optJSONObject("availableClaim") != null
         if (cp != null && cp.has("balance") && !cp.isNull("balance")) novoSaldo(slug, s, cp.optLong("balance"))
     }
@@ -288,7 +291,9 @@ class Plataforma(private val a: MainActivity, val ns: String, private val fundo:
             val slug = slugs[i]
             val js = cab + "const r=await fetch('/api/v2/channels/$slug',{headers:h,credentials:'include'});s=r.status;const c=await r.json().catch(()=>null);let p=null;" +
                 (if (token != null) "if(c){try{const q=await fetch('/api/v2/channels/$slug/points',{headers:h,credentials:'include'});if(q.status===200)p=await q.json()}catch(e){}}" else "") +
-                "t=JSON.stringify({c,p});"
+                // Sub do canal (mesma leitura do PC): /me traz "subscription" para quem está logado.
+                "let m=null;" + (if (token != null) "if(c){try{const q=await fetch('/api/v2/channels/$slug/me',{headers:h,credentials:'include'});if(q.status===200){const o=await q.json();if(o&&'subscription' in o)m=!!o.subscription}}catch(e){}}" else "") +
+                "t=JSON.stringify({c,p,m});"
             buscar(js) { st, txt -> aplicarKick(slug, st, txt); proximo(i + 1) }
         }
         if (token != null && usuario == null) {
@@ -308,6 +313,7 @@ class Plataforma(private val a: MainActivity, val ns: String, private val fundo:
         s.live = ls != null
         s.viewers = ls?.optInt("viewer_count") ?: 0
         s.nome = c.optJSONObject("user")?.optString("username")?.ifBlank { null } ?: slug
+        if (j.has("m") && !j.isNull("m")) s.sub = j.optBoolean("m")
         val p = j.optJSONObject("p")
         val d = p?.optJSONObject("data") ?: p
         if (d != null && d.has("points") && !d.isNull("points")) novoSaldo(slug, s, d.optLong("points"))
@@ -403,9 +409,14 @@ class Plataforma(private val a: MainActivity, val ns: String, private val fundo:
         vigias.keys.toList().filter { it !in noAr }.forEach { pararVigia(it) }
         val agora = System.currentTimeMillis()
         val esperando = noAr.filter { it !in vigias }
-        // Rodízio: quem está há mais de 45 min dá a vez a outra live oficial que está esperando.
-        if (esperando.isNotEmpty()) vigias.keys.toList().filter { agora - est(it).desde > 45 * 60_000L }.take(esperando.size).forEach { pararVigia(it) }
-        esperando.sortedBy { est(it).vistoEm }.take(MAX - vigias.size).forEach { iniciarVigia(it) }
+        // SUB PRIMEIRO (17/11/2026, igual ao PC): canal em que a conta é sub rende mais pontos — entra na frente e fica
+        // enquanto estiver ao vivo (fora do rodízio). Sub esperando tira a live comum que está há mais tempo.
+        val subsEsperando = esperando.count { est(it).sub }
+        val faltaVaga = subsEsperando - (MAX - vigias.size)
+        if (faltaVaga > 0) vigias.keys.toList().filter { !est(it).sub }.sortedBy { est(it).desde }.take(faltaVaga).forEach { pararVigia(it) }
+        // Rodízio (só entre as comuns): quem está há mais de 45 min dá a vez a outra live oficial que está esperando.
+        if (esperando.isNotEmpty()) vigias.keys.toList().filter { !est(it).sub && agora - est(it).desde > 45 * 60_000L }.take(esperando.size).forEach { pararVigia(it) }
+        esperando.sortedWith(compareByDescending<String> { est(it).sub }.thenBy { est(it).vistoEm }).take(MAX - vigias.size).forEach { iniciarVigia(it) }
     }
 
     private val MUDO = "(function(){var m=function(){document.querySelectorAll('video,audio').forEach(function(v){v.muted=true;v.volume=0})};" +
@@ -617,7 +628,7 @@ class Plataforma(private val a: MainActivity, val ns: String, private val fundo:
         lista.addView(cab)
 
         val cs = canais()
-        val ordem = cs.sortedWith(compareByDescending<String> { vigias.containsKey(it) }.thenByDescending { est(it).live }.thenByDescending { est(it).pontos ?: -1 })
+        val ordem = cs.sortedWith(compareByDescending<String> { vigias.containsKey(it) }.thenByDescending { est(it).live }.thenByDescending { est(it).sub }.thenByDescending { est(it).pontos ?: -1 })
         val card = cartao()
         card.addView(texto("CANAIS OFICIAIS · ${cs.count { est(it).live }} AO VIVO", 11f, true, "#A9A2D4"))
         for (slug in ordem) card.addView(linhaCanal(slug))
@@ -652,7 +663,7 @@ class Plataforma(private val a: MainActivity, val ns: String, private val fundo:
         val l = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(9), 0, dp(9)) }
         val esq = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
         val vendo = vigias.containsKey(slug)
-        esq.addView(texto((if (s.live) "● " else "○ ") + s.nome.ifBlank { slug } + if (s.bau) "  🎁" else "", 15f, true, if (s.live) (if (twitch) "#C9A8FF" else "#7DFF57") else "#8F88B8"))
+        esq.addView(texto((if (s.live) "● " else "○ ") + s.nome.ifBlank { slug } + (if (s.sub) "  ⭐ sub" else "") + (if (s.bau) "  🎁" else ""), 15f, true, if (s.live) (if (twitch) "#C9A8FF" else "#7DFF57") else "#8F88B8"))
         val sub = when {
             s.erro != null -> s.erro!!
             bauOcupado == slug -> "🎁 pegando o baú…"
