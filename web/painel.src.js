@@ -160,7 +160,7 @@
 
   function htmlInicio() {
     const t = M().treinador();
-    if (!t) return '<div class="card"><div class="sub">Faça login no jogo: o painel aparece quando a conta conectar.</div></div>';
+    if (!t) return '<div class="card"><div class="sub">Faça login no jogo: o painel aparece quando a conta conectar.</div></div>' + cardPremium();
     const pct = Math.min(100, (t.dentro / t.faixa) * 100);
     const s = sessao();
     const ps = previsaoShiny(s);
@@ -173,8 +173,22 @@
       <div class="sub">✨ Shinys na sessão: <b>${s.shV}</b> vistos · <b>${s.shC}</b> capturados${ps ? `<br>Previsão: ver ~1 a cada ${ps.ver} · capturar ${ps.cap ? '~1 a cada ' + ps.cap : '— (sem capturas na sessão)'}${!ps.lure && ps.cap ? ' · com Lure, metade' : ''}<br>A bola fecha em ${ps.fecha.toFixed(2).replace('.', ',')}% dos abates: o shiny só é seu se ela fechar.` : ''}</div></div>`;
     else h += '<div class="card"><div class="sub">O placar da sessão aparece quando a conta estiver caçando.</div></div>';
     if (bx && bx.partes && bx.partes.length) h += `<div class="card"><div class="t">Bônus de XP agora · ×${String(bx.tr).replace('.', ',')}</div>${bx.partes.map((p) => `<div class="ln"><span>${esc(BONUS_PT[p.id] || p.id)}</span><b>×${String(p.tr).replace('.', ',')}${p.ate ? ` · até ${new Date(p.ate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : ''}</b></div>`).join('')}</div>`;
-    return h;
+    return h + cardPremium();
   }
+  // TRADER PREMIUM (18/11/2026): roda só no Idleterino do PC. Aqui só o aviso, com "Ocultar" (fica escondido de vez).
+  function cardPremium() {
+    if (LS('premiumOculto', false)) return '';
+    return `<div class="card" style="border-color:#ffd166"><div class="t">📈 Novo: Trader Premium (no PC)</div>
+      <div class="sub">No Idleterino do PC, o Trader acha as pechinchas do Market com o preço justo, compra dentro dos seus limites, entra nos sorteios e upa para revender. <b>Teste grátis de 3 dias</b> · mensal R$ 15,90 · vitalício R$ 49,90, por Pix dentro do app.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-prem="ver">Ver no site</button><button class="btn g2" data-prem="ocultar">Ocultar</button></div></div>`;
+  }
+  // Os botões do aviso (o Início se redesenha a cada 5 s: liga pelo clique no painel inteiro).
+  raiz.addEventListener('click', (e) => {
+    const b = e.target && e.target.closest ? e.target.closest('[data-prem]') : null;
+    if (!b) return;
+    if (b.dataset.prem === 'ver') chamar('abrir', { url: 'https://viinnisantoos.github.io/idleterino/#premium' });
+    else { LSset('premiumOculto', true); desenhar(); }
+  });
 
   async function htmlHunt() {
     const r = await M().huntRank();
