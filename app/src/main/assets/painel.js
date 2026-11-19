@@ -179,7 +179,7 @@
   function cardPremium() {
     if (LS('premiumOculto', false)) return '';
     return `<div class="card" style="border-color:#ffd166"><div class="t">📈 Novo: Trader Premium (no PC)</div>
-      <div class="sub">No Idleterino do PC, o Trader acha as pechinchas do Market com o preço justo, compra dentro dos seus limites, entra nos sorteios e upa para revender. <b>Teste grátis de 3 dias</b> · mensal R$ 15,90 · vitalício R$ 49,90, por Pix dentro do app.</div>
+      <div class="sub">No Idleterino do PC, o Trader acha as pechinchas do Market com o preço justo, compra dentro dos seus limites, entra nos sorteios e upa para revender, e agora tem o ⚡ Auto hunt e o 🎯 Auto catch. <b>Teste grátis de 3 dias</b> · mensal R$ 24,90 · vitalício R$ 79,90, por Pix dentro do app.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-prem="ver">Ver no site</button><button class="btn g2" data-prem="ocultar">Ocultar</button></div></div>`;
   }
   // Os botões do aviso (o Início se redesenha a cada 5 s: liga pelo clique no painel inteiro).
