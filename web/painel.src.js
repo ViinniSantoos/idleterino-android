@@ -108,7 +108,7 @@
   bt.addEventListener('pointerup', () => { if (arr && !arr.moveu) abrir(); else LSset('pos', pos); arr = null; });
 
   let aba = LS('aba', 'inicio');
-  const ABAS = [['inicio', 'Início'], ['hunt', 'Melhor hunt'], ['prox', 'Próximas'], ['evo', 'Evoluir'], ['casas', '🏠 Casas'], ['boss', '🧮 Boss'], ['comprar', 'Comprar'], ['pvp', 'PvP'], ['contas', 'Contas'], ['ajustes', 'Ajustes'], ['apoio', '❤ Apoiar']];
+  const ABAS = [['inicio', 'Início'], ['hunt', 'Melhor hunt'], ['prox', 'Próximas'], ['evo', 'Evoluir'], ['casas', '🏠 Casas'], ['boss', '🧮 Boss'], ['prey', '🧿 Prey'], ['comprar', 'Comprar'], ['pvp', 'PvP'], ['contas', 'Contas'], ['ajustes', 'Ajustes'], ['apoio', '❤ Apoiar']];
   let timer = null;
   // Atualização (igual ao PC): o app baixa sozinho; aqui aparece a faixa com "Atualizar agora".
   let att = null;
@@ -151,6 +151,7 @@
     else if (aba === 'evo') { cp.innerHTML = '<div class="card"><div class="sub">Lendo os seus pokémon…</div></div>'; cp.innerHTML = await htmlEvo(); ligarEvo(); }
     else if (aba === 'casas') { if (!cp.querySelector('#casasOk')) cp.innerHTML = '<div class="card"><div class="sub">Calculando as casas…</div></div>'; const h = await htmlCasas(); if (aba === 'casas') { cp.innerHTML = h; ligarCasas(); } }
     else if (aba === 'boss') { if (!cp.querySelector('#bsOk')) cp.innerHTML = '<div class="card"><div class="sub">Lendo os bosses e os preços do Market…</div></div>'; const h = await htmlBoss(); if (aba === 'boss') { cp.innerHTML = h; ligarBoss(); } }
+    else if (aba === 'prey') { cp.innerHTML = '<div class="card"><div class="sub">Lendo o Prey e o Bestiário…</div></div>'; const h = await htmlPrey(); if (aba === 'prey') cp.innerHTML = h; }
     else if (aba === 'comprar') { cp.innerHTML = htmlComprar(); ligarComprar(); }
     else if (aba === 'pvp') { if (!pvpRodando) cp.innerHTML = '<div class="card"><div class="sub">Lendo o PvP…</div></div>'; const h = await htmlPvp(); if (aba === 'pvp') { cp.innerHTML = h; ligarPvp(); } }
     else if (aba === 'ajustes') { const [f, tl] = await Promise.all([chamar('farmLigado'), chamar('telaLigada')]); cp.innerHTML = htmlAjustes(f, tl); ligarAjustes(); }
@@ -198,6 +199,37 @@
     return `<div class="card"><div class="t">⚡ Mais XP · ${esc(r.pokemon)}${r.aoe ? ' · AoE' : ''}${r.bike ? ' · bike ' + esc(r.bike) : ''}</div>${r.top.slice(0, 6).map((h) => linha(h, 'xp')).join('')}</div>
       <div class="card"><div class="t">💰 Mais ouro</div>${(r.topOuro || []).slice(0, 4).map((h) => linha(h, 'ouro')).join('')}</div>
       <div class="sub">Cálculo do Idleterino com os stats e golpes reais do seu pokémon contra cada selvagem, a efetividade da hunt, os seus bônus e o Dia Sazonal${r.tipoDia ? ` (hoje: ${esc(tipo(r.tipoDia))})` : ''}.</div>`;
+  }
+
+  // ---------- 🧿 Prey (qual dos 9 escolher) e 📖 Bestiário (dano por tipagem) — o mesmo cálculo do PC (20/11/2026) ----------
+  const PREY_NOME = { dano: '⚔️ Dano', defesa: '🛡️ Defensivo', captura: '🎯 Capture Boost', spawn: '🐾 Spawn' };
+  const pc2 = (x) => String((Number(x) || 0).toFixed(2)).replace('.', ',');
+  async function htmlPrey() {
+    const [p, b] = await Promise.all([M().pve('prey').catch(() => null), M().pve('bestiario').catch(() => null)]);
+    let h = '<div class="card"><div class="t">🧿 Prey de hoje</div>';
+    if (!p || !p.pronto) h += '<div class="sub">Ainda lendo o jogo.</div>';
+    else if (!p.temPrey) h += '<div class="sub">Ainda sem Prey hoje: abra a Mochila › Prey no jogo e dê a roletada grátis. Depois volte aqui.</div>';
+    else {
+      if (p.melhor) h += `<div class="sub">Sua melhor hunt: <b>${esc(p.melhor.nome)}</b> (${curto(p.melhor.xpH)} XP/h).</div>`;
+      for (const c of p.cartelas) {
+        if (c.vazia) { h += `<div class="ln"><span>Cartela ${c.cartela + 1}</span><b>sem roletada</b></div>`; continue; }
+        const val = c.bonus === 'spawn' ? `+${c.valor} por onda` : `${c.bonus === 'defesa' ? '−' : '+'}${c.valor}%`;
+        h += `<div class="t" style="margin-top:8px">Cartela ${c.cartela + 1} · ${PREY_NOME[c.bonus] || esc(c.bonus)} ${'★'.repeat(c.est)} · ${val}</div>`;
+        if (c.escolhido) h += `<div class="sub">Escolhido: <b>${esc(c.escolhidoNome)}</b>${c.recomendado && c.recomendado.pokeId !== c.escolhido ? ` · a sugestão era ${esc(c.recomendado.nome)}` : ' ✓'}</div>`;
+        else if (c.recomendado) h += `<div class="sub ok">👉 Escolha <b>${esc(c.recomendado.nome)}</b>: ${esc(c.recomendado.porque)}${c.recomendado.ganho != null ? ` · até ~+${c.recomendado.ganho}% de abates` : ''}</div>`;
+        h += c.opcoes.map((o) => `<div class="ln"><span>${c.recomendado && o.pokeId === c.recomendado.pokeId ? '👉 ' : ''}<b>${esc(o.nome)}</b><br><span class="sub">${o.hunt ? `${esc(o.hunt.nome)} Nv ${nf(o.hunt.nivel)}` : 'fora das suas hunts'}${c.bonus === 'captura' ? (o.capturado ? ' · já capturou' : ' · nunca capturou') : ''}</span></span><b>${o.hunt ? o.pct + '%' : '—'}</b></div>`).join('');
+        h += (c.dicas || []).map((d) => `<div class="sub">${esc(d)}</div>`).join('');
+      }
+    }
+    h += '</div><div class="card"><div class="t">📖 Bestiário: dano extra por tipagem</div>';
+    if (!b || !b.pronto || !b.temDex) h += '<div class="sub">A Pokédex da conta ainda não chegou: abra o jogo e volte em alguns segundos.</div>';
+    else {
+      if (b.aqui && b.aqui.tipos.length) h += `<div class="sub ok">Na hunt de agora (${esc(b.aqui.nome)}): ${b.aqui.tipos.map((t) => `${esc(tipo(t.tipo))} +${pc2(t.pct)}%`).join(' · ')}</div>`;
+      h += b.tipos.filter((t) => t.bp).map((t) => `<div class="ln"><span>${esc(tipo(t.tipo))}<br><span class="sub">${t.comBonus}/${t.especies} espécies</span></span><b class="ok">+${pc2(t.pct)}%</b></div>`).join('') || '<div class="sub">Nenhuma espécie com 25 mil abates ainda.</div>';
+      if (b.perto.length) h += '<div class="t" style="margin-top:8px">Degraus mais perto</div>' + b.perto.slice(0, 8).map((x) => `<div class="ln"><span><b>${esc(x.nome)}</b><br><span class="sub">faltam ${nf(x.falta)} · caça: ${esc(x.hunt.nome)} Nv ${nf(x.hunt.nivel)}</span></span><b>+${pc2(x.ganho)}%</b></div>`).join('');
+      h += '<div class="sub">Cada espécie dá +0,05% (25 mil abates), +0,15% (150 mil) ou +0,5% (500 mil) contra a tipagem dela; as espécies somam.</div>';
+    }
+    return h + '</div>';
   }
 
   async function htmlProx() {
