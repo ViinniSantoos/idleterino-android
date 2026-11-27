@@ -265,7 +265,10 @@
               try {
                 const m = JSON.parse(d);
                 const p = m.perfil;
-                if (p && p.nick && nossos.perfis.has(String(p.nick).toLowerCase())) pvp.perfis[String(p.nick)] = { em: Date.now(), time: slimTime(p.pvpTime), chaves: Object.keys(p).slice(0, 40) };
+                const kNick = p && p.nick ? String(p.nick).toLowerCase() : '';
+                // Consulta avulsa (o time de outro jogador, no Planejador): fica à parte, fora do meta do top 50.
+                if (kNick && pvp.avulsoPedido === kNick) pvp.avulso = { nick: String(p.nick), em: Date.now(), time: slimTime(p.pvpTime) };
+                else if (kNick && nossos.perfis.has(kNick)) pvp.perfis[String(p.nick)] = { em: Date.now(), time: slimTime(p.pvpTime), chaves: Object.keys(p).slice(0, 40) };
               } catch {}
               return;
             }
@@ -382,6 +385,101 @@
         try { const teto = await import('/shared/teto-captura.mjs'); teto.aplicarTetoDeCaptura([...c.map.values()], (id) => c.map.get(id)); } catch {}
       }
       return { ...c, ram: pveRam };
+    }
+    // ---- 📊 SCORE FIEL AO JOGO (25/11/2026) ----
+    // Os mesmos números da ficha do jogo (ginasios.mjs): PvP = poderNoGinasio, PvE = poderNoNivel — e a comparação contra
+    // quem importa de verdade, não contra "todas as espécies":
+    //  · PvP: o pokémon (com o IV, a qualidade, a potência, o refino, o TM e o shiny DELE) na MELHOR forma que alcança
+    //    (evolução ou Mega), no level do meio do top 50 do PvP, contra o poder no PvP de CADA pokémon que o top 50 usa de
+    //    verdade (no level deles) → "mais forte que X% dos pokémon do top 50".
+    //  · PvE: o poder no PvE na melhor forma, no level do SEU pokémon em campo, ÷ o poder do seu pokémon em campo →
+    //    "farma N× o seu" (no mesmo level: a diferença é só espécie, IV, qualidade, potência e shiny).
+    const formasDoScore = (esp, map, ram) => {
+      const formas = [esp]; const vistos = new Set([esp.pokeId]);
+      const anda = (e2, prof) => { if (prof > 4) return; let ds = []; try { ds = ram.destinosDeEvolucao(e2, (id) => map.get(id)); } catch {} for (const d of ds || []) { const s = d && d.especie; if (!s || vistos.has(s.pokeId)) continue; vistos.add(s.pokeId); formas.push(s); anda(s, prof + 1); } };
+      anda(esp, 0);
+      for (const c of formas.slice()) for (const m of map.values()) if (m && m.name && !vistos.has(m.pokeId) && (m.name === `Mega ${c.name}` || m.name.startsWith(`Mega ${c.name} `))) { vistos.add(m.pokeId); formas.push(m); }
+      return formas;
+    };
+    const pkDoScore = (f, speciesId, level) => ({ id: 1, speciesId, ivs: f.ivs, quality: Number(f.quality ?? f.qualidade) || 1, qualidade: Number(f.quality ?? f.qualidade) || 1, potencia: Number(f.potencia) || 1,
+      shiny: !!f.shiny, refino: f.refino || null, tmElemental: f.tmElemental || f.el || null, tmFisico: !!f.tmFisico, level });
+    // ---- PASSIVAS DO PVP (26/11/2026) ----
+    // A tabela oficial do jogo (/shared/pvp-passivas.mjs): qual espécie tem qual passiva e os números de cada uma.
+    // Valem no PvP do tabuleiro (Ranqueado, torneios, Ginásio) a partir de PASSIVAS_DESDE_MS; Amistoso e Treino já.
+    // O jogo muda as passivas sem avisar o app (v1.495.1: Leavanny, Crustle, Carracosta, Stunfisk, Aegislash…): a tabela é
+    // relida do jogo a cada 30 min (o "?v=" pega a versão nova do módulo, sem precisar reabrir o app).
+    const PAS_TTL = 30 * 60 * 1000;
+    let modPasP = null, modPasEm = 0;
+    const modPas = () => {
+      if (!modPasP || Date.now() - modPasEm > PAS_TTL) { modPasEm = Date.now(); modPasP = import(`/shared/pvp-passivas.mjs?v=${Math.floor(Date.now() / PAS_TTL)}`).catch(() => { modPasP = null; return null; }); }
+      return modPasP;
+    };
+    let tabPasP = null, tabPasEm = 0;
+    function tabelaPassivas() {
+      if (!tabPasP || Date.now() - tabPasEm > PAS_TTL) {
+        tabPasEm = Date.now();
+        tabPasP = (async () => {
+          const m = await modPas();
+          if (!m || !m.PASSIVAS || !m.PASSIVA_POR_ESPECIE) return null;
+          const passivas = {};
+          for (const [id, p] of Object.entries(m.PASSIVAS)) passivas[id] = { ...p };
+          return { desde: Number(m.PASSIVAS_DESDE_MS) || 0, bstMax: Number(m.BST_MAX_PASSIVA) || 500, poder: Number(m.PODER_600) || 600,
+            semPassiva: Array.isArray(m.CAMPEONATOS_SEM_PASSIVA) ? [...m.CAMPEONATOS_SEM_PASSIVA] : [],
+            passivas, porId: Object.fromEntries(m.PASSIVA_POR_ESPECIE) };
+        })().catch(() => { tabPasP = null; return null; });
+      }
+      return tabPasP;
+    }
+    async function passivaDe(speciesId) {
+      const t = await tabelaPassivas();
+      const k = t && t.porId[Number(speciesId)];
+      return k ? t.passivas[k] : null;
+    }
+    let reguaPvp = { chave: null, valores: [], nivel: 0 };
+    async function scoreFicha(f, ctx) {
+      if (!f || f.speciesId == null || !f.ivs) return null;
+      const { map, gi, ram } = await catalogoPve();
+      const esp = map.get(Number(f.speciesId));
+      if (!esp) return null;
+      const meta = (ctx && Array.isArray(ctx.meta) ? ctx.meta : []).filter((k) => k && k.speciesId != null && k.ivs && Number(k.level) > 0);
+      const formas = formasDoScore(esp, map, ram);
+      const out = { pvp: null, pve: null };
+      // PvP contra o top 50 de verdade (a régua só é refeita quando a leitura do top 50 muda).
+      if (meta.length >= 10) {
+        const chave = `${meta.length}|${meta[0].speciesId}|${meta[meta.length - 1].speciesId}|${meta[0].level}`;
+        if (reguaPvp.chave !== chave) {
+          const valores = [];
+          for (const k of meta) { const e = map.get(Number(k.speciesId)); if (!e) continue; try { const v = Number(gi.poderNoGinasio(pkDoScore(k, e.pokeId, Number(k.level)), e)); if (v > 0) valores.push(v); } catch {} }
+          valores.sort((a, b) => a - b);
+          const lv = meta.map((k) => Number(k.level)).sort((a, b) => a - b);
+          reguaPvp = { chave, valores, nivel: lv[Math.floor(lv.length / 2)] };
+        }
+        let melhor = null;
+        for (const fo of formas) { try { const v = Number(gi.poderNoGinasio(pkDoScore(f, fo.pokeId, reguaPvp.nivel), fo)); if (v > 0 && (!melhor || v > melhor.v)) melhor = { v, forma: fo.name }; } catch {} }
+        if (melhor && reguaPvp.valores.length) {
+          const arr = reguaPvp.valores; let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < melhor.v) lo = m + 1; else hi = m; }
+          out.pvp = { pct: Math.round((lo / arr.length) * 100), forma: melhor.forma, nivel: reguaPvp.nivel, n: arr.length };
+        }
+      }
+      // A passiva do PvP (a da forma final que tem, se alguma tem): o poder do jogo não conta ela, então vai ao lado.
+      try {
+        const t = await tabelaPassivas();
+        if (t) {
+          let pas = null;
+          for (const fo of formas) { const k = t.porId[Number(fo.pokeId)]; if (k) { pas = { id: k, nome: t.passivas[k].nome, icone: t.passivas[k].icone, forma: fo.name }; } }
+          if (pas) { if (out.pvp) out.pvp.passiva = pas; else out.passiva = pas; }
+        }
+      } catch {}
+      // PvE contra o seu pokémon em campo, no level dele.
+      const ref = ctx && ctx.ref;
+      const espRef = ref && map.get(Number(ref.speciesId));
+      if (ref && espRef && ref.ivs && Number(ref.level) > 0) {
+        let base = 0; try { base = Number(gi.poderNoNivel(pkDoScore(ref, espRef.pokeId, Number(ref.level)), espRef, Number(ref.level))); } catch {}
+        let melhor = null;
+        for (const fo of formas) { try { const v = Number(gi.poderNoNivel(pkDoScore(f, fo.pokeId, Number(ref.level)), fo, Number(ref.level))); if (v > 0 && (!melhor || v > melhor.v)) melhor = { v, forma: fo.name }; } catch {} }
+        if (melhor && base > 0) out.pve = { x: Math.round((melhor.v / base) * 100) / 100, forma: melhor.forma, ref: espRef.name, nivel: Number(ref.level) };
+      }
+      return out.pvp || out.pve || out.passiva ? out : null;
     }
     const fxTipo = (atk, defs) => defs.reduce((m, d) => m * ((jogo.tabelaTipos && jogo.tabelaTipos[atk] && jogo.tabelaTipos[atk][d] != null) ? jogo.tabelaTipos[atk][d] : 1), 1);
     const naHuntX = (x) => { const a = jogo.amp || 1.5; return x > 1 ? 1 + (x - 1) * a : x < 1 ? x / a : 1; };
@@ -548,7 +646,7 @@
         if (!prox) continue;
         const h = huntDe(e.pokeId);
         if (!h) continue;
-        perto.push({ nome: (map.get(Number(e.pokeId)) || {}).name || `#${e.pokeId}`, tipos: e.tipos, abates: k, alvo: prox.abates, falta: prox.abates - k, ganho: (prox.bp - mb.bpDaEspecie(k)) / 100, hunt: { nome: h.nome, nivel: Number(h.nivel) || 0 } });
+        perto.push({ pokeId: Number(e.pokeId), nome: (map.get(Number(e.pokeId)) || {}).name || `#${e.pokeId}`, tipos: e.tipos, abates: k, alvo: prox.abates, falta: prox.abates - k, ganho: (prox.bp - mb.bpDaEspecie(k)) / 100, hunt: { nome: h.nome, nivel: Number(h.nivel) || 0 } });
       }
       perto.sort((a, b) => a.falta - b.falta);
       // Na hunt que você farma agora: quanto o Bestiário já dá contra os tipos dela.
@@ -1719,8 +1817,72 @@
       };
     }
 
+    // ---- 🖼️ RETRATO DO POKÉMON (27/11/2026, visual novo do app) ----
+    // A pose de frente do próprio jogo (sprites.mjs: carregarOutfit + quadrosDe(…, 3), como o retrato do jogo), mas
+    // recortada onde tem desenho e CENTRALIZADA, com uma sombra no chão. Volta um PNG pequeno (data URL) por espécie,
+    // em cache: a tela do app só desenha a imagem.
+    let modSprP = null;
+    const modSpr = () => modSprP || (modSprP = import('/sprites.mjs').catch(() => { modSprP = null; return null; }));
+    const retCache = new Map();
+    async function retrato(sid, px) {
+      const chave = `${sid}|${px}`;
+      if (retCache.has(chave)) return retCache.get(chave);
+      const p = (async () => {
+        const esp = (await especies()).get(Number(sid));
+        if (!esp || !(Number(esp.looktype) > 1)) return null;
+        const sp = await modSpr(); if (!sp || !sp.carregarOutfit || !sp.quadrosDe) return null;
+        const s = await sp.carregarOutfit(Number(esp.looktype));
+        const q = s && sp.quadrosDe(s, 3)[0]; const pag = q && s.imagens[q.pagina];
+        if (!q || !pag) return null;
+        const c = document.createElement('canvas'); c.width = q.w; c.height = q.h;
+        const g = c.getContext('2d'); g.drawImage(pag, q.x, q.y, q.w, q.h, 0, 0, q.w, q.h);
+        let x0 = q.w, y0 = q.h, x1 = -1, y1 = -1;
+        const d = g.getImageData(0, 0, q.w, q.h).data;
+        for (let y = 0; y < q.h; y++) for (let x = 0; x < q.w; x++) if (d[(y * q.w + x) * 4 + 3] > 20) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        if (x1 < 0) return null;
+        const w = x1 - x0 + 1, h = y1 - y0 + 1;
+        const fit = Math.min(Math.max(1, Math.floor((px * 0.86) / Math.max(w, h))), (px * 0.86) / Math.max(w, h));
+        const o = document.createElement('canvas'); o.width = px; o.height = px;
+        const go = o.getContext('2d'); go.imageSmoothingEnabled = false;
+        const nw = Math.round(w * fit), nh = Math.round(h * fit), cx = px / 2, base = Math.round(px / 2 + nh / 2 + px * 0.02);
+        go.fillStyle = 'rgba(0,0,0,.35)'; go.beginPath(); go.ellipse(cx, Math.min(px - 3, base), nw * 0.38, Math.max(2, px * 0.045), 0, 0, Math.PI * 2); go.fill();
+        go.drawImage(c, x0, y0, w, h, Math.round(cx - nw / 2), Math.round(base - nh), nw, nh);
+        return o.toDataURL('image/png');
+      })().catch(() => null);
+      retCache.set(chave, p);
+      return p;
+    }
+    async function retratos(ids, px0) {
+      const px = Math.max(24, Math.min(192, Math.round(Number(px0) || 96)));
+      const out = {};
+      for (const id of (Array.isArray(ids) ? ids : []).slice(0, 80)) { const u = await retrato(id, px); if (u) out[id] = u; }
+      return out;
+    }
     // ---- PvP: consulta a tabela e as equipes públicas dos primeiros, devagar ----
     const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+    // 👥 TIME DE OUTRO JOGADOR (o dono, 27/11/2026: "consultar e montar o time dos outros para eu dar a dica"). O mesmo
+    // perfil público que o jogo mostra ao clicar no nick (ranking.perfil), um por vez, no máximo 1 a cada 3 s; a resposta
+    // não aparece no jogo e não entra no meta do top 50.
+    let avulsoEm = 0;
+    async function pvpPerfil(nick0) {
+      const nick = String(nick0 || '').trim().slice(0, 32);
+      if (!/^[\w.\- ]{2,32}$/u.test(nick)) return { erro: 'Nick inválido.' };
+      if (!sock || sock.readyState !== 1) return { erro: 'A conta não está conectada ao jogo.' };
+      if (Date.now() - avulsoEm < 3000) return { erro: 'Espere uns segundos entre uma consulta e outra.' };
+      avulsoEm = Date.now();
+      const k = nick.toLowerCase();
+      pvp.avulsoPedido = k; pvp.avulso = null;
+      nossos.perfis.set(k, Date.now());
+      sock.send(JSON.stringify({ t: 'ranking.perfil', nick }));
+      for (let i = 0; i < 16 && !(pvp.avulso && pvp.avulso.nick.toLowerCase() === k); i++) await espera(500);
+      setTimeout(() => { if (pvp.avulsoPedido === k) pvp.avulsoPedido = null; nossos.perfis.delete(k); }, 15000);
+      const a = pvp.avulso;
+      if (!a) return { erro: `Não achei o perfil de "${nick}" (confira o nick).` };
+      if (!a.time.length) return { erro: `${a.nick} não tem time de PvP montado.`, nick: a.nick };
+      const r = await pvpLer(a.time.map((x) => x.speciesId));
+      const info = {}; for (const x of a.time) if (r.info[x.speciesId]) info[x.speciesId] = r.info[x.speciesId];
+      return { nick: a.nick, time: a.time, info, em: a.em };
+    }
     async function pvpColetar(n = 50, passoMs = 5000) {
       if (pvp.coletando) return { ok: false, motivo: 'ja' };
       if (!sock || sock.readyState !== 1) return { ok: false, motivo: 'sem conexão' };
@@ -1777,7 +1939,8 @@
         pvp.pediuInfo = Date.now();
         try { sock.send(JSON.stringify({ t: 'pvp.info', semLadder: 1 })); } catch {}
       }
-      return { meuTime: pvp.meuTime || null, euPvp: jogo.eu.pvp ? JSON.parse(JSON.stringify(jogo.eu.pvp)) : null, nivel: Number(jogo.eu.level) || 0, at: pvp.at, coletando: pvp.coletando, feitos: pvp.feitos, total: pvp.total, erro: pvp.erro, linhas, perfis: pvp.perfis, info, meus, tabelaTipos: jogo.tabelaTipos, eu, nick: jogo.eu.nick || null, euKeys: jogo.keys.slice(0, 80) };
+      let passivas = null; try { passivas = await tabelaPassivas(); } catch {}
+      return { passivas, meuTime: pvp.meuTime || null, euPvp: jogo.eu.pvp ? JSON.parse(JSON.stringify(jogo.eu.pvp)) : null, nivel: Number(jogo.eu.level) || 0, at: pvp.at, coletando: pvp.coletando, feitos: pvp.feitos, total: pvp.total, erro: pvp.erro, linhas, perfis: pvp.perfis, info, meus, tabelaTipos: jogo.tabelaTipos, eu, nick: jogo.eu.nick || null, euKeys: jogo.keys.slice(0, 80) };
     }
 
     // ---- duelo 1×1 com as contas do jogo ----
@@ -1914,36 +2077,266 @@
       const faixa = Math.max(1, (Number(e.xpProximo) || 0) - (Number(e.xpNivel) || 0));
       return { nick: String(e.nick), level: Number(e.level) || 0, dentro, faixa, gold: Number(e.gold) || 0, guildTag: (e.guild && e.guild.tag) || null, guildNome: (e.guild && e.guild.nome) || null, at: jogo.at || 0 };
     }
-    // Faixa do Idleterino no modo ULTRA: nick, nível e XP do nível, em cima da caixa do jogo. Só
-    // mostra (não clica em nada) e some fora do ULTRA.
-    setInterval(() => {
+    // 🌙 PAINEL DOS MODOS ECONOMIA E ULTRA (27/11/2026, pedido do Tiranosarro e do dono): o jogo esconde quase tudo nesses
+    // modos. O app põe por cima um painel SÓ DE LEITURA (não clica em nada no jogo) com: nick, nível e XP; coins, gemas,
+    // pokébolas, poções e capturas da sessão; o Bestiário dos pokémon da hunt de agora; e o Prey do dia (quantos abateu
+    // hoje e o aviso quando ele não aparece na hunt). No ULTRA fica dentro da caixa do jogo; no Economia, no topo.
+    // O "—" no canto recolhe (fica gravado).
+    const eco = { itens: null, itensP: null, pesado: null, pesadoEm: 0, calc: false };
+    const ecoItens = () => eco.itensP || (eco.itensP = fetch('/assets/items.json').then((r) => r.json()).then((j) => { const a = Array.isArray(j) ? j : (j.items || []); eco.itens = new Map(a.map((x) => [Number(x.id), x])); return eco.itens; }).catch(() => { eco.itensP = null; return null; }));
+    const qtdDe = (v) => (typeof v === 'number' ? v : v && typeof v === 'object' ? Number(v.qtd ?? v.q ?? v.n ?? v.quantidade) || 0 : Number(v) || 0);
+    const ecoN = (x) => Number(x || 0).toLocaleString('pt-BR');
+    const ecoCurto = (n) => { const v = Number(n) || 0, a = Math.abs(v); return a >= 1e9 ? `${(v / 1e9).toFixed(2).replace('.', ',')} bi` : a >= 1e6 ? `${(v / 1e6).toFixed(1).replace('.', ',')} mi` : a >= 1e4 ? `${Math.round(v / 1e3)} mil` : ecoN(v); };
+    const ecoEsc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    async function ecoPesado() {
+      // O que muda devagar (Bestiário da hunt e Prey, com as imagens): no máximo a cada 15 s.
+      if (eco.calc || Date.now() - eco.pesadoEm < 15000) return eco.pesado;
+      eco.calc = true;
+      try {
+        const { map } = await catalogoNota();
+        let mb = null; try { mb = await import('/shared/bestiario.mjs'); } catch {}
+        const dex = jogo.eu.pokedex || {};
+        const kDe = (chave) => Number((dex[String(chave)] || {}).k) || 0;
+        const lista = mb && jogo.hunts ? mb.especiesDoBestiario(jogo.hunts, (id) => map.get(Number(id)) || null) : [];
+        const chaveDe = (pid) => { const e = lista.find((x) => Number(x.pokeId) === Number(pid)); return e ? e.chave : pid; };
+        const slug = jogo.eu.huntSlug || (jogo.eu.hunt && jogo.eu.hunt.slug);
+        const hunt = (jogo.hunts || []).find((h) => h.slug === slug) || null;
+        const naHunt = new Set(hunt && Array.isArray(hunt.especies) ? hunt.especies.map((e) => Number(e.pokeId)) : []);
+        const besti = [];
+        for (const pid of [...naHunt].slice(0, 6)) {
+          const k = kDe(chaveDe(pid)); const prox = mb ? mb.proximoDegrauDoBestiario(k) : null;
+          besti.push({ pid, nome: (map.get(pid) || {}).name || `#${pid}`, k, alvo: prox ? prox.abates : null, img: await retrato(pid, 40) });
+        }
+        // Prey: os abates de hoje = abates agora − os do começo do dia (anotados pelo app, por nick).
+        const prey = jogo.eu.prey && Array.isArray(jogo.eu.prey.cartelas) ? jogo.eu.prey : null;
+        const liberadas = Number(jogo.eu.preyCartela2) > 0 ? 2 : 1;
+        const nick = String(jogo.eu.nick || '').toLowerCase();
+        let base = {}; try { base = JSON.parse(localStorage.getItem('idt-prey:' + nick) || '{}'); } catch {}
+        if (!prey || base.dia !== prey.dia) base = { dia: prey ? prey.dia : null, k: {} };
+        const ESTR = (n) => '★'.repeat(Math.max(0, Math.min(5, n || 0)));
+        const BON = { dano: 'Dano', defesa: 'Defensivo', captura: 'Capture Boost', spawn: 'Spawn' };
+        const preys = [];
+        for (let i = 0; i < liberadas; i++) {
+          const c = prey && prey.cartelas[i];
+          if (!c || c.pk == null || !c.bonus) continue;
+          const k = kDe(chaveDe(c.pk));
+          if (base.k[c.pk] == null) base.k[c.pk] = k;
+          preys.push({ pk: Number(c.pk), nome: (map.get(Number(c.pk)) || {}).name || `#${c.pk}`, bonus: BON[c.bonus] || c.bonus, est: ESTR(c.est), hoje: Math.max(0, k - base.k[c.pk]), naHunt: naHunt.has(Number(c.pk)), img: await retrato(c.pk, 42) });
+        }
+        try { localStorage.setItem('idt-prey:' + nick, JSON.stringify(base)); } catch {}
+        eco.pesado = { hunt: hunt ? { nome: hunt.nome, nivel: Number(hunt.nivel) || 0 } : null, besti, preys };
+        eco.pesadoEm = Date.now();
+      } catch {} finally { eco.calc = false; }
+      return eco.pesado;
+    }
+
+    // ---- 📋 PAINEL DO IDLETERINO FORA DO ULTRA (27/11/2026, pedido do Fujin: quem joga no Economia com as contas lado a lado) ----
+    // A pessoa escolhe nos Ajustes do PokeIdle: a faixa em cima de cada conta (na tela do APP, fora do jogo), o estoque
+    // dentro do GASTOS do modo Economia do jogo, as duas ou nenhuma. Tudo só leitura.
+    const painelCfg = { estoque: true };
+    // Ícones do próprio jogo (os mesmos caminhos dele), em PNG pequeno: a tela do app não carrega imagens do site.
+    const SPRITE_BOLA = { 1: '/assets/site/assets/ui/ball-poke.png', 2: '/assets/site/assets/ui/ball-great.png', 3: '/img/ball-super.png', 4: '/assets/site/assets/ui/ball-ultra.png', 5: '/img/ball-beast.png' };
+    const icoCache = new Map();
+    function icone(src, px = 18) {
+      if (!src) return Promise.resolve(null);
+      const k = `${src}|${px}`;
+      if (icoCache.has(k)) return icoCache.get(k);
+      const p = new Promise((res) => {
+        const im = new Image();
+        im.onload = () => { try { const c = document.createElement('canvas'); c.width = c.height = px; const g = c.getContext('2d'); g.imageSmoothingEnabled = false; const s = Math.min(px / im.naturalWidth, px / im.naturalHeight); const w = im.naturalWidth * s, h = im.naturalHeight * s; g.drawImage(im, (px - w) / 2, (px - h) / 2, w, h); res(c.toDataURL('image/png')); } catch { res(null); } };
+        im.onerror = () => res(null);
+        im.src = src;
+      });
+      icoCache.set(k, p);
+      return p;
+    }
+    const icoBola = (id) => icone(SPRITE_BOLA[id] || SPRITE_BOLA[1]);
+    // O mesmo caminho do jogo (shared/icone-item.mjs: caminhoIconeRel + srcIcone).
+    const icoItem = (id) => {
+      const x = eco.itens && eco.itens.get(Number(id)); const ic = x && x.icon ? String(x.icon) : '';
+      if (!ic) return Promise.resolve(null);
+      const rel = ic.startsWith('site/') ? ic : ic.startsWith('/') ? `site${ic}` : `site/assets/items/${ic}`;
+      return icone(`/assets/${rel}`);
+    };
+    const sesDe = (nick) => { try { return JSON.parse(localStorage.getItem('sessao-hunt:' + String(nick || '').toLowerCase()) || 'null'); } catch { return null; } };
+    // Gasto na sessão por hora → o estoque dá para menos de 1 h (ou acabou): aviso.
+    const acabando = (q, gasto, ms) => q <= 0 || (ms > 10 * 60000 && gasto > 0 && q < (gasto * 3600000) / ms);
+
+    // Estoque embaixo de cada item no GASTOS do modo Economia (o jogo só troca o número de dentro do botão; o app
+    // acrescenta um selinho com o que ainda tem na mochila, e põe de volta quando o jogo refaz os botões).
+    function pintarEstoqueGastos() {
+      const host = document.querySelector('.eco-gastos-chips');
+      if (!host) return;
+      if (!document.getElementById('idt-est-css')) {
+        const st = document.createElement('style'); st.id = 'idt-est-css';
+        st.textContent = '.eco-gasto.idt-ce{display:inline-grid!important;grid-template-columns:auto auto;align-items:center;column-gap:5px;row-gap:1px}'
+          + '.eco-gasto.idt-ce>:first-child{grid-row:1/3}.eco-gasto.idt-ce>b{grid-column:2;line-height:1.05}'
+          + '.idt-est{grid-column:2;justify-self:start;font:800 10px/1.2 "Segoe UI",system-ui,sans-serif;color:#5ee08f;background:#1d3a2a;border-radius:4px;padding:0 4px;white-space:nowrap}'
+          + '.idt-est.baixo{color:#ffc75a;background:#3d2c12}.idt-est.zero{color:#ff7a8a;background:#3a1820}'
+          + '.eco-gasto.idt-baixo{box-shadow:0 0 0 2px #c9893a inset}.eco-gasto.idt-zero{box-shadow:0 0 0 2px #d0465c inset}';
+        (document.head || document.documentElement).append(st);
+      }
+      const ses = sesDe(jogo.eu.nick) || {};
+      const ms = Number(ses.ms) || 0;
+      for (const bt of host.querySelectorAll('button.eco-gasto[data-chave]')) {
+        const ch = bt.dataset.chave || '';
+        const id = Number(ch.slice(1));
+        if (!id) continue;
+        const bola = ch[0] === 'b';
+        const q = qtdDe(((bola ? jogo.eu.balls : jogo.eu.items) || {})[id]);
+        const gasto = Number(String((bt.querySelector('b') || {}).textContent || '').replace(/\D+/g, '')) || 0;
+        const zero = q <= 0, baixo = !zero && acabando(q, gasto, ms);
+        let s = bt.querySelector('.idt-est');
+        if (!s) { s = document.createElement('span'); s.className = 'idt-est'; bt.append(s); bt.classList.add('idt-ce'); }
+        const txt = zero ? 'acabou' : `${baixo ? '⚠ ' : ''}${ecoN(q)}`;
+        if (s.textContent !== txt) s.textContent = txt;
+        s.classList.toggle('baixo', baixo); s.classList.toggle('zero', zero);
+        bt.classList.toggle('idt-baixo', baixo); bt.classList.toggle('idt-zero', zero);
+        s.title = `Na mochila: ${ecoN(q)}${ms > 60000 && gasto ? ` · gastando ~${ecoN(Math.round((gasto * 3600000) / ms))}/h nesta sessão` : ''} (Idleterino)`;
+      }
+    }
+    function limparEstoqueGastos() {
+      for (const s of document.querySelectorAll('.eco-gastos-chips .idt-est')) { const bt = s.parentElement; s.remove(); if (bt) bt.classList.remove('idt-ce', 'idt-baixo', 'idt-zero'); }
+    }
+
+    // Melhor captura da sessão: a lista de capturas que o próprio jogo guarda (capturas-hist:<nick>), só as feitas
+    // depois do começo da sessão, com a nota da ficha do jogo. Refeita só quando entra captura nova.
+    const melhorCache = { chave: null, v: null };
+    async function melhorCaptura(nick, ses) {
+      let lista = []; try { lista = JSON.parse(localStorage.getItem('capturas-hist:' + String(nick).toLowerCase()) || '[]'); } catch {}
+      if (!Array.isArray(lista)) lista = [];
+      const inicio = Date.now() - (Number(ses && ses.ms) || 0);
+      const daSessao = lista.filter((c) => c && Number(c.em) >= inicio - 5000 && c.speciesId != null);
+      const chave = `${daSessao.length}|${daSessao[0] ? daSessao[0].em : 0}`;
+      if (melhorCache.chave === chave) return melhorCache.v;
+      let best = null;
+      for (const c of daSessao.slice(0, 100)) {
+        const r = await fichaNota(c).catch(() => null);
+        if (r && r.nota != null && (!best || r.nota > best.nota)) best = { nota: r.nota, nome: c.nome || r.nome, sid: Number(c.speciesId), em: Number(c.em), level: Number(c.level) || 0, shiny: !!c.shiny };
+      }
+      if (best) best.img = await retrato(best.sid, 40);
+      melhorCache.chave = chave; melhorCache.v = best;
+      return best;
+    }
+
+    // O resumo que a faixa do app mostra (o app pede a cada ~8 s, só com a faixa ligada e a tela do PokeIdle aberta).
+    async function resumoConta() {
+      const t = treinador(); if (!t) return null;
+      const itens = eco.itens || await ecoItens();
+      const ses = sesDe(t.nick);
+      const ms = ses && ses.ms > 60000 ? Number(ses.ms) : 0;
+      const porH = (x) => (ms ? Math.round((Number(x) || 0) * 3600000 / ms) : null);
+      const gastoDe = (mapa, id) => qtdDe(((ses && ses[mapa]) || {})[id]);
+      const nomeBola = (id) => { const b = (jogo.bolas || []).find((x) => Number(x.id) === Number(id)); return b ? String(b.nome).replace(/ ?Ball$/i, '') : `#${id}`; };
+      const bolas = [];
+      for (const [id, q0] of Object.entries(jogo.eu.balls || {})) { const q = qtdDe(q0); if (q > 0 || gastoDe('bolas', id) > 0) bolas.push({ id: Number(id), q, nome: nomeBola(id), gasto: gastoDe('bolas', id) }); }
+      bolas.sort((a, b) => b.gasto - a.gasto || b.q - a.q);
+      const pocoes = [];
+      if (itens) for (const [id, q0] of Object.entries(jogo.eu.items || {})) { const it = itens.get(Number(id)); const q = qtdDe(q0); if (it && (it.category === 'heal' || it.category === 'revive') && (q > 0 || gastoDe(it.category === 'heal' ? 'pocoes' : 'revives', id) > 0)) pocoes.push({ id: Number(id), q, nome: String(it.name).replace(/ ?Potion$/i, ''), gasto: gastoDe(it.category === 'heal' ? 'pocoes' : 'revives', id), revive: it.category === 'revive' }); }
+      pocoes.sort((a, b) => (a.revive - b.revive) || b.gasto - a.gasto || b.q - a.q);
+      for (const b of bolas.slice(0, 3)) { b.img = await icoBola(b.id); b.baixo = acabando(b.q, b.gasto, ms); }
+      for (const p of pocoes.slice(0, 3)) { p.img = await icoItem(p.id); p.baixo = acabando(p.q, p.gasto, ms); }
+      const pz = await ecoPesado();
+      const melhor = ses ? await melhorCaptura(t.nick, ses).catch(() => null) : null;
+      const avisos = [];
+      for (const x of [...bolas, ...pocoes]) if (x.gasto > 0 && acabando(x.q, x.gasto, ms)) avisos.push(x.q <= 0 ? `${x.nome} acabou` : `${x.nome} acabando`);
+      for (const p of (pz && pz.preys) || []) if (!p.naHunt) avisos.push(`Prey ${p.nome} fora da hunt`);
+      return JSON.parse(JSON.stringify({
+        nick: t.nick, level: t.level, gold: t.gold, goldH: ses ? porH(ses.gold) : null, orbs: Number(jogo.eu.orbs) || 0,
+        cap: ses ? Number(ses.capturas) || 0 : null, capH: ses ? porH(ses.capturas) : null,
+        bolas: bolas.slice(0, 3), nBolas: bolas.reduce((s, b) => s + b.q, 0),
+        pocoes: pocoes.slice(0, 3), nPocoes: pocoes.filter((p) => !p.revive).reduce((s, p) => s + p.q, 0),
+        hunt: pz && pz.hunt, preys: (pz && pz.preys) || [], besti: (pz && pz.besti) || [], melhor, avisos: avisos.slice(0, 4),
+      }));
+    }
+
+    setInterval(async () => {
       const ultra = document.documentElement.classList.contains('modo-ultra');
+      const economia = document.documentElement.classList.contains('modo-economia');
+      if (economia && !ultra && painelCfg.estoque) { try { if (!eco.itens) ecoItens(); pintarEstoqueGastos(); } catch {} }
+      else if (!painelCfg.estoque) { try { limparEstoqueGastos(); } catch {} }
       let f = document.getElementById('idleterino-ultra');
-      const t = ultra ? treinador() : null;
+      const t = ultra ? treinador() : null; // só no ULTRA (no Economia o painel ficava por cima das coisas do jogo)
       if (!t) { if (f) f.remove(); return; }
-      // Dentro da caixa do ULTRA (o jogo esconde tudo o que fica fora dela), logo abaixo do título.
-      const caixa = document.querySelector('#ultra .ultra-caixa') || document.querySelector('.ultra-caixa');
+      const caixa = ultra ? (document.querySelector('#ultra .ultra-caixa') || document.querySelector('.ultra-caixa')) : null;
+      if (f && f.dataset.onde !== (caixa ? 'caixa' : 'topo')) { f.remove(); f = null; }
       if (f && caixa && f.parentElement !== caixa) { f.remove(); f = null; }
       if (!f) {
-        f = document.createElement('div'); f.id = 'idleterino-ultra';
-        f.style.cssText = 'pointer-events:none;display:flex;flex-direction:column;gap:4px;margin:6px 0 8px;padding:8px 12px;border-radius:10px;background:rgba(12,13,20,.82);border:1px solid rgba(255,255,255,.14);color:#eef0f7;font:700 14px/1.3 "Segoe UI",system-ui,sans-serif;text-align:center';
-        if (!caixa) f.style.cssText += ';position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:2147483646;min-width:260px';
-        const l1 = document.createElement('div'); l1.className = 'l1';
-        const bar = document.createElement('div'); bar.style.cssText = 'height:6px;border-radius:6px;background:rgba(255,255,255,.1);overflow:hidden';
-        const fill = document.createElement('i'); fill.style.cssText = 'display:block;height:100%;background:linear-gradient(90deg,#ff4d6d,#a970ff,#53fc18)'; bar.append(fill);
-        const l2 = document.createElement('div'); l2.className = 'l2'; l2.style.cssText = 'font-weight:500;font-size:12px;color:#a7adc2';
-        f.append(l1, bar, l2);
-        if (caixa) { const titulo = caixa.firstElementChild; if (titulo) titulo.after(f); else caixa.prepend(f); }
-        else { (document.body || document.documentElement).append(f); f.style.setProperty('display', 'flex', 'important'); }
+        f = document.createElement('div'); f.id = 'idleterino-ultra'; f.dataset.onde = caixa ? 'caixa' : 'topo';
+        f.style.cssText = 'pointer-events:none;margin:6px 0 8px;padding:10px 12px;border-radius:14px;background:rgba(12,13,20,.92);border:1px solid rgba(255,255,255,.14);color:#eef0f7;font:13px/1.35 "Segoe UI",system-ui,sans-serif;text-align:left;box-shadow:0 10px 30px rgba(0,0,0,.45)';
+        if (!caixa) f.style.cssText += ';position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:2147483646;width:min(640px,96vw)';
+        // A caixa do ULTRA do jogo é estreita (os nomes cortavam): o app a deixa mais larga enquanto o painel está nela.
+        if (caixa) { const titulo = caixa.firstElementChild; if (titulo) titulo.after(f); else caixa.prepend(f); caixa.style.maxWidth = 'min(620px, 96vw)'; caixa.style.width = 'min(620px, 96vw)'; }
+        else (document.body || document.documentElement).append(f);
       }
-      const n = (x) => Number(x || 0).toLocaleString('pt-BR');
+      let rec = false; try { rec = localStorage.getItem('idt-painel-rec') === '1'; } catch {}
       const pct = Math.min(100, (t.dentro / t.faixa) * 100);
-      f.querySelector('.l1').textContent = `${t.nick} · Nv ${t.level}`;
-      f.querySelector('i').style.width = `${pct}%`;
-      f.querySelector('.l2').textContent = `${n(t.dentro)} / ${n(t.faixa)} xp (${pct.toFixed(1).replace('.', ',')}%) · ouro ${n(t.gold)}`;
+      const pz = eco.pesado;
+      // Coins, gemas, bolas, poções (categoria "heal" do jogo) e as capturas da sessão (o painel de estatísticas do jogo).
+      const itens = eco.itens || (ecoItens(), null);
+      const bolas = Object.entries(jogo.eu.balls || {}).map(([id, q]) => ({ id: Number(id), q: qtdDe(q) })).filter((b) => b.q > 0).sort((a, b) => b.q - a.q);
+      const nomeIt = (id) => { const x = itens && itens.get(Number(id)); return x ? String(x.name).replace(/ ?(Ball|Potion)$/i, '') : `#${id}`; };
+      // As bolas têm catálogo próprio no jogo (catalogoBolas do welcome), não são itens da mochila.
+      const nomeBola = (id) => { const b = (jogo.bolas || []).find((x) => Number(x.id) === Number(id)); return b ? String(b.nome).replace(/ ?Ball$/i, '') : `#${id}`; };
+      const pocoes = itens ? Object.entries(jogo.eu.items || {}).map(([id, q]) => ({ id: Number(id), q: qtdDe(q), it: itens.get(Number(id)) })).filter((p) => p.it && p.it.category === 'heal' && p.q > 0) : [];
+      let ses = null; try { ses = JSON.parse(localStorage.getItem('sessao-hunt:' + String(t.nick).toLowerCase()) || 'null'); } catch {}
+      const porH = (x) => (ses && ses.ms > 60000 ? Math.round((Number(x) || 0) * 3600000 / ses.ms) : null);
+      const caixaR = (rot, val, sub, cor) => `<div style="background:#161926;border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:6px 9px;min-width:0"><div style="font-size:10px;font-weight:800;color:#8a90a6">${rot}</div><div style="font-size:16px;font-weight:800;white-space:nowrap;${cor ? `color:${cor}` : ''}">${val}</div><div style="font-size:10.5px;color:#8a90a6;line-height:1.25">${sub || '&nbsp;'}</div></div>`;
+      const img = (u, px, cor) => `<span style="position:relative;display:inline-block;flex:none;width:${px}px;height:${px}px;border-radius:50%;background:radial-gradient(circle at 50% 78%,${cor || 'rgba(169,112,255,.55)'},#161926 80%);border:2px solid rgba(255,255,255,.1)">${u ? `<img src="${u}" style="position:absolute;left:50%;bottom:-2px;transform:translateX(-50%);width:${px + 4}px;height:${px + 4}px;image-rendering:pixelated">` : ''}</span>`;
+      let h = `<div style="display:flex;align-items:baseline;gap:8px"><b style="font-size:15px">${ecoEsc(t.nick)} · Nv ${ecoN(t.level)}</b><span style="margin-left:auto;font-size:11.5px;color:#8a90a6">${pz && pz.hunt ? `${ecoEsc(pz.hunt.nome)} (Nv ${ecoN(pz.hunt.nivel)})` : ''}</span><span data-rec style="pointer-events:auto;cursor:pointer;padding:0 6px;color:#8a90a6;font-weight:800" title="Recolher / abrir o painel do Idleterino">${rec ? '▾' : '—'}</span></div>`;
+      h += `<div style="height:6px;border-radius:6px;background:rgba(255,255,255,.1);overflow:hidden;margin:6px 0 2px"><i style="display:block;height:100%;width:${pct}%;background:linear-gradient(90deg,#ff4d6d,#a970ff,#53fc18)"></i></div><div style="font-size:11.5px;color:#a7adc2">${ecoN(t.dentro)} / ${ecoN(t.faixa)} xp (${pct.toFixed(1).replace('.', ',')}%)${ses && porH(ses.xpTreinador) ? ` · +${ecoCurto(porH(ses.xpTreinador))} xp/h` : ''}</div>`;
+      if (!rec) {
+        const nb = bolas.reduce((s, b) => s + b.q, 0), np = pocoes.reduce((s, p) => s + p.q, 0);
+        h += `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:6px;margin:10px 0 4px">`
+          + caixaR('<i style="display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:-1px;background:radial-gradient(circle at 35% 35%,#fff2b0,#f2b72a 55%,#b9821a)"></i> COINS', ecoCurto(t.gold), ses && porH(ses.gold) ? `+${ecoCurto(porH(ses.gold))}/h` : '', '#ffcf4a')
+          + caixaR('💎 GEMAS', ecoN(jogo.eu.orbs), 'no inventário', '#ff5fb0')
+          + caixaR('⚪ POKÉBOLAS', ecoN(nb), bolas.slice(0, 2).map((b) => `${nomeBola(b.id)} ${ecoN(b.q)}`).join(' · '))
+          + caixaR('🧪 POÇÕES', ecoN(np), pocoes.slice(0, 2).map((p) => `${nomeIt(p.id)} ${ecoN(p.q)}`).join(' · '))
+          + caixaR('🎯 CAPTURAS', ses ? ecoN(ses.capturas) : '—', ses && porH(ses.capturas) != null ? `${ecoN(porH(ses.capturas))}/h na sessão` : 'na sessão', '#45e39b') + '</div>';
+        if (pz && pz.besti.length) {
+          h += `<div style="font-size:10.5px;font-weight:800;color:#8a90a6;margin:8px 0 4px">📖 BESTIÁRIO DESTA HUNT</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px">`;
+          for (const b of pz.besti) {
+            const p2 = b.alvo ? Math.min(100, (b.k / b.alvo) * 100) : 100;
+            h += `<div style="display:flex;gap:7px;align-items:center;background:#161926;border-radius:10px;padding:4px 7px;min-width:0">${img(b.img, 30)}<div style="min-width:0;flex:1"><b style="font-size:12px">${ecoEsc(b.nome)}</b><div style="font-size:10.5px;color:#8a90a6">${b.alvo ? `${ecoN(b.k)} / ${ecoN(b.alvo)} abates` : `${ecoN(b.k)} · ✅ máximo`}</div><div style="height:4px;border-radius:4px;background:#272c40;overflow:hidden;margin-top:2px"><i style="display:block;height:100%;width:${p2}%;background:${b.alvo ? '#5fb4ff' : '#45e39b'}"></i></div></div></div>`;
+          }
+          h += '</div>';
+        }
+        if (pz && pz.preys.length) {
+          h += `<div style="font-size:10.5px;font-weight:800;color:#8a90a6;margin:8px 0 4px">🧿 PREY DO DIA</div><div style="display:flex;flex-wrap:wrap;gap:6px">`;
+          for (const p of pz.preys) {
+            h += `<div style="flex:1 1 180px;display:flex;gap:8px;align-items:center;border-radius:10px;padding:4px 9px;background:#161926;border:1px solid ${p.naHunt ? 'rgba(169,112,255,.4)' : 'rgba(255,199,90,.45)'}">${img(p.img, 32)}<div style="min-width:0"><b style="font-size:12.5px">${ecoEsc(p.nome)}</b><div style="font-size:10.5px;color:#8a90a6">${ecoEsc(p.bonus)} ${p.est}</div></div><div style="margin-left:auto;text-align:right">${p.naHunt ? `<b style="font-size:16px;color:#45e39b">${ecoN(p.hoje)}</b><div style="font-size:10px;color:#8a90a6">abatidos hoje</div>` : `<b style="font-size:11px;color:#ffc75a">⚠ não aparece<br>nesta hunt</b>`}</div></div>`;
+          }
+          h += '</div>';
+        }
+      }
+      if (f.dataset.h !== h) {
+        f.dataset.h = h; f.innerHTML = h;
+        const r = f.querySelector('[data-rec]');
+        if (r) r.onclick = () => { try { localStorage.setItem('idt-painel-rec', rec ? '0' : '1'); } catch {} f.dataset.h = ''; };
+      }
+      ecoPesado();
     }, 2000);
 
     const PEDIDOS = { 'market.meus': 1, 'market.historico': 1, 'market.historicoGlobal': 1 };
+    // 🗳️ VOTO NO IDLEHUB (21/11/2026: o jogo trocou o TopIdle pelo IdleHub.io). O Início pergunta ao próprio jogo, pela mesma
+    // rota que a janela "Vote & Ganhe" usa (/idlehub/me, só leitura), quanto falta para o próximo voto e qual é o link.
+    // No máximo 1 pergunta a cada 10 min (e logo depois de abrir o link de votar).
+    const voto = { d: null, em: 0, pedindo: false };
+    async function lerVoto() {
+      if (voto.pedindo) return;
+      let tok = null; try { tok = (JSON.parse(localStorage.getItem('sessao') || 'null') || {}).token; } catch {}
+      if (!tok) return;
+      voto.pedindo = true;
+      try {
+        const r = await fetch('/idlehub/me', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: tok }) });
+        const d = r.ok ? await r.json() : null;
+        if (d && typeof d === 'object') {
+          let url = null; try { const u = new URL(String(d.url || '')); if (u.protocol === 'https:' && /(^|\.)idlehub\.io$/i.test(u.hostname)) url = u.href; } catch {}
+          voto.d = { ativo: !!d.ativo, esperaMs: Math.max(0, Number(d.esperaMs) || 0), url, at: Date.now() };
+        }
+      } catch {} finally { voto.em = Date.now(); voto.pedindo = false; }
+    }
+    window.addEventListener('focus', () => { if (Date.now() - voto.em > 60000) lerVoto(); });
     Object.defineProperty(window, '__idleterinoMercado', {
       value: Object.freeze({
         pedir(t, pagina) {
@@ -1954,6 +2347,7 @@
           return true;
         },
         ler() { return JSON.parse(JSON.stringify(keep)); },
+        voto(agora) { if (agora ? Date.now() - voto.em > 15000 : Date.now() - voto.em > 10 * 60000) lerVoto(); return voto.d ? { ...voto.d } : null; },
         // Radar de atualizações do jogo (versão, texto do "!" e os números que o app usa).
         radar() { return radar().catch(() => null); },
         tierDados(ids, meta) { return tierDados(ids, meta).then((r) => JSON.parse(JSON.stringify(r))).catch((e) => ({ erro: String(e && e.message || e) })); },
@@ -1965,6 +2359,9 @@
         },
         // Comércio: nota, stats e espécie da ficha de um anúncio (mesma conta da ficha do jogo).
         fichaNota(f) { return fichaNota(f).catch(() => null); },
+        // Painel do Idleterino fora do ULTRA: o resumo da faixa do app e a escolha do estoque dentro do jogo.
+        resumo() { return resumoConta().catch(() => null); },
+        painelCfg(c) { if (c && typeof c === 'object') painelCfg.estoque = c.estoque !== false; return { ...painelCfg }; },
         // Previsão de shiny: chance por encontro (do servidor) e o fim de cada bônus de shiny que vale agora.
         shinyInfo() {
           const fim = (k) => Number(canais[k] && canais[k].bonus && canais[k].bonus.shiny) || 0;
@@ -1978,7 +2375,7 @@
           extras.instalados.add(nome);
           const I = {
             get sock() { return sock; }, get ultimaLista() { return ultimaLista; }, get itensResp() { return itensResp; }, enviarNosso: (txt) => enviarDoApp(txt),
-            jogo, keep, nossos, espera, catalogoNota, huntsDoHorizonte, nivelDepoisDe, xpHoraDaConta, coberturaHunts, tiposDe, fichaNota,
+            jogo, keep, nossos, espera, catalogoNota, huntsDoHorizonte, nivelDepoisDe, xpHoraDaConta, coberturaHunts, tiposDe, fichaNota, scoreFicha, tabelaPassivas, passivaDe,
             get meuTimePvp() { return pvp.meuTime ? JSON.parse(JSON.stringify(pvp.meuTime)) : null; },
             filtro: (f) => extras.filtros.push(f), ouvir: (f) => extras.ouvintes.push(f), expor: (o) => Object.assign(extras.api, o),
           };
@@ -1998,6 +2395,8 @@
         ofertas(ids, moeda, meta) { return ofertas(ids, moeda, meta).then((r) => JSON.parse(JSON.stringify(r))).catch((e) => ({ erro: String(e) })); },
         precos(nomes) { return precosDe(nomes).then((r) => JSON.parse(JSON.stringify(r))).catch((e) => ({ erro: String(e) })); },
         pvpLer(ids) { return pvpLer(ids).then((r) => JSON.parse(JSON.stringify(r))).catch((e) => ({ erro: String(e) })); },
+        retratos(ids, px) { return retratos(ids, px).catch(() => ({})); },
+        pvpPerfil(nick) { return pvpPerfil(nick).then((r) => JSON.parse(JSON.stringify(r))).catch((e) => ({ erro: String(e) })); },
       }),
     });
 })();
