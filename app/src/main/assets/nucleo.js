@@ -60,7 +60,7 @@
     }
 
     // ---- consultas do app que o jogo NÃO deve desenhar (o perfil de outro jogador abriria na tela) ----
-    const nossos = { tabela: 0, perfis: new Map(), especies: 0, lista: 0, itens: 0 };
+    const nossos = { tabela: 0, perfis: new Map(), especies: 0, lista: 0, itens: 0, ranking: 0, perfisXp: new Map() };
     let itensResp = null; // resposta do market.itens pedida pela Calculadora de Boss
     const precos = {}; // nome em minúsculas -> { em, linhas }
     let ultimaEspecies = null;
@@ -108,8 +108,13 @@
       if (ev && donoDaResposta(ev) === 'app') return true;
       if (d.indexOf('"seq":' + SEQ_SHINY) >= 0 && d.indexOf('"market"') >= 0) return true;
       for (const f of extras.filtros) { try { if (f(d)) return true; } catch {} }
-      if (d.indexOf('"perfil"') >= 0 && nossos.perfis.size) {
-        try { const m = JSON.parse(d); if (m.t === 'perfil' && m.perfil && recente(nossos.perfis.get(String(m.perfil.nick || '').toLowerCase()))) return true; } catch {}
+      // 📈 Top XP: o ranking de nível pedido pelo app não abre a aba Ranking do jogo.
+      if (d.indexOf('"t":"ranking"') >= 0 && recente(nossos.ranking)) return true;
+      if (d.indexOf('"perfil"') >= 0 && (nossos.perfis.size || nossos.perfisXp.size)) {
+        try {
+          const m = JSON.parse(d);
+          if (m.t === 'perfil' && m.perfil) { const k = String(m.perfil.nick || '').toLowerCase(); if (recente(nossos.perfis.get(k)) || recente(nossos.perfisXp.get(k))) return true; }
+        } catch {}
       }
       return false;
     }
@@ -166,6 +171,8 @@
 
     // ---- PvP: tabela e equipes do topo ----
     const pvp = { tabela: null, tabelaEm: 0, perfis: {}, coletando: false, feitos: 0, total: 0, at: 0, erro: null };
+    // 📈 Top XP: o ranking de nível (100 linhas) e o perfil público de cada um, lidos só quando a pessoa pede.
+    const topx = { linhas: null, linhasEm: 0, perfis: {}, coletando: false, parar: false, feitos: 0, total: 0, inicio: 0, erro: null, resultado: null };
     const slimTime = (lista) => (Array.isArray(lista) ? lista : []).slice(0, 5).map((k) => ({
       ...DUELO(k),
       speciesId: k.speciesId ?? k.especieId ?? k.pokeId ?? null, nome: k.nome || k.name || null, level: Number(k.level) || 0,
@@ -257,6 +264,16 @@
               } catch {}
               return;
             }
+            if (d.indexOf('"t":"ranking"') >= 0) {
+              try {
+                const m = JSON.parse(d);
+                if (m.t === 'ranking' && m.aba === 'nivel' && Array.isArray(m.linhas)) {
+                  topx.linhas = m.linhas.slice(0, 100).map((l) => ({ rank: Number(l.rank) || 0, nick: String(l.nick || ''), level: Number(l.level) || 0, valor: Number(l.valor) || 0 })).filter((l) => l.nick);
+                  topx.linhasEm = Date.now();
+                }
+              } catch {}
+              return;
+            }
             if (d.indexOf('"pvpTabela"') >= 0) {
               try { const m = JSON.parse(d); if (m.t === 'pvpTabela' && !m.erro && Number(m.pagina) === 1) { pvp.tabela = Array.isArray(m.linhas) ? m.linhas : []; pvp.tabelaEm = Date.now(); } } catch {}
               return;
@@ -266,6 +283,12 @@
                 const m = JSON.parse(d);
                 const p = m.perfil;
                 const kNick = p && p.nick ? String(p.nick).toLowerCase() : '';
+                // 📈 Top XP: só os números que a conta do ritmo precisa (XP total, nível, abates, guild).
+                if (kNick && nossos.perfisXp.has(kNick)) {
+                  topx.perfis[kNick] = { em: Date.now(), nick: String(p.nick), xp: Number(p.xp) || 0, level: Number(p.level) || 0, derrotas: Number(p.derrotas) || 0,
+                    tag: String(p.guildTag || ''), guild: String(p.guildNome || ''), vip: !!p.vip };
+                  if (!nossos.perfis.has(kNick) && pvp.avulsoPedido !== kNick) return;
+                }
                 // Consulta avulsa (o time de outro jogador, no Planejador): fica à parte, fora do meta do top 50.
                 if (kNick && pvp.avulsoPedido === kNick) pvp.avulso = { nick: String(p.nick), em: Date.now(), time: slimTime(p.pvpTime) };
                 else if (kNick && nossos.perfis.has(kNick)) pvp.perfis[String(p.nick)] = { em: Date.now(), time: slimTime(p.pvpTime), chaves: Object.keys(p).slice(0, 40) };
@@ -783,6 +806,68 @@
       out.eventos = eventos;
       out.pokemons = pks.map(({ _xp, _alvo, ...r }) => r);
       return out;
+    }
+    // 📈 PREVISÃO DE NÍVEL do treinador (o dono, 28/11/2026, da conversa do gaprieo): só junta os dados da conta — o
+    // ritmo real da sessão, os buffs com o fim de cada um, a prey de agora e o XP por abate de cada nível de hunt. A conta
+    // hora a hora (fim de semana, evento que vem) fica na tela do app, que muda na hora quando a pessoa mexe nas opções.
+    async function previsaoDados() {
+      const L = Number(jogo.eu.level) || 0;
+      if (!L) return { pronto: false };
+      const agora = Date.now();
+      const hr = await huntRank().catch(() => null);
+      const at = hr && hr.atualEst;
+      const esp = await especies();
+      let ha = null; try { ha = await import('/hunt-analyser.mjs'); } catch {}
+      const xpPorAbate = (h) => { try { return ha ? ha.mediaPorKill(h, esp, 0).xp : 0; } catch { return 0; } };
+      const porNivel = new Map();
+      for (const h of jogo.hunts || []) {
+        const n = Number(h.nivel) || 0;
+        if (!n || !Array.isArray(h.especies) || !h.especies.length || String(h.area || '').toLowerCase() === 'outland') continue;
+        const x = xpPorAbate(h);
+        const cur = porNivel.get(n);
+        if (x > 0 && (!cur || x > cur.xp)) porNivel.set(n, { nivel: n, xp: x, nome: String(h.nome || h.name || h.slug || '?') });
+      }
+      const huntAgora = at && (jogo.hunts || []).find((h) => h.slug && h.slug === at.slug);
+      const xpAbAgora = huntAgora ? xpPorAbate(huntAgora) : 0;
+      // Só as hunts de nível maior que dão mais XP por abate que a de agora (as que a conta sobe quando liberar).
+      // Mais a melhor que ela já libera (quem caça abaixo do nível pode subir na hora).
+      const melhores = [...porNivel.values()].filter((h) => h.nivel > (Number(at && at.nivel) || 0) && h.xp > xpAbAgora).sort((a, b) => a.nivel - b.nivel);
+      const jaLibera = melhores.filter((h) => h.nivel <= L).sort((a, b) => b.xp - a.xp)[0];
+      const niveis = [...(jaLibera ? [jaLibera] : []), ...melhores.filter((h) => h.nivel > L).slice(0, 40)]
+        .map((h) => ({ nivel: h.nivel, nome: h.nome, rel: xpAbAgora > 0 ? h.xp / xpAbAgora : 1 }));
+      const bx = jogo.eu.bonusXpBruto;
+      let partes = [];
+      if (bx && Array.isArray(bx.partes)) {
+        partes = bx.partes.map((x) => ({ id: String(x.id || ''), tr: Number(x.tr) || 1, ate: Number(x.ate) || 0, alvo: Number(x.alvo) || 0 })).filter((x) => x.tr !== 1 && (!(x.ate > 0) || x.ate > agora));
+        const r = (Number(bx.tr) || 1) / partes.reduce((m, x) => m * x.tr, 1);
+        if (Math.abs(r - 1) > 1e-4) partes.push({ id: 'outros', tr: r, ate: 0, alvo: 0 });
+      }
+      const PERMANENTE = agora + 5 * 365 * 86400000;
+      // Prey de agora: Dano e Spawn no pokémon da hunt de agora sobem o XP (a mesma conta da aba Prey).
+      const prey = [];
+      try {
+        const pr = jogo.eu.prey && Array.isArray(jogo.eu.prey.cartelas) ? jogo.eu.prey : null;
+        if (pr && huntAgora && Array.isArray(huntAgora.especies)) {
+          let mp = null; try { mp = await import('/shared/prey.mjs'); } catch {}
+          const valor = (b, e) => (mp && mp.valorDoPrey ? mp.valorDoPrey(b, e) : ({ dano: [10, 20, 30, 40, 50], spawn: [1, 2, 3, 4, 5] }[b] || [])[e - 1] || 0);
+          for (const c of pr.cartelas.slice(0, Number(jogo.eu.preyCartela2) > 0 ? 2 : 1)) {
+            if (!c || c.pk == null || (c.bonus !== 'spawn' && c.bonus !== 'dano')) continue;
+            if (!huntAgora.especies.some((e) => Number(e.pokeId) === Number(c.pk))) continue;
+            const v = Number(valor(c.bonus, Number(c.est) || 0)) || 0;
+            const n = huntAgora.especies.length;
+            const pct = c.bonus === 'spawn' ? Math.min(100, (v / Math.max(3, n > 3 ? 5 : 4)) * 100) : v * 0.3;
+            if (pct > 0) prey.push({ nome: (esp.get(Number(c.pk)) || {}).name || `#${c.pk}`, bonus: c.bonus, est: Number(c.est) || 0, pct: Math.round(pct * 10) / 10 });
+          }
+        }
+      } catch {}
+      let sessaoMin = 0;
+      try { const nick = String(jogo.eu.nick || '').toLowerCase(); const s = nick && JSON.parse(localStorage.getItem('sessao-hunt:' + nick) || 'null'); if (s && s.ms > 0) sessaoMin = Math.round(s.ms / 60000); } catch {}
+      const kph = at ? Number(at.kph) || 0 : 0;
+      const multTr = partes.reduce((m, x) => (x.id === 'atrasados' && x.alvo > 0 && L >= x.alvo ? m : m * x.tr), 1);
+      return { pronto: true, agora, nick: jogo.eu.nick || null, L, xp: Number(jogo.eu.xp) || xpTotalNv(L), medido: xpHoraDaConta(), sessaoMin,
+        modelo: kph > 0 && xpAbAgora > 0 ? kph * xpAbAgora * multTr : 0, multTr, kph,
+        huntAgora: at ? { nome: at.nome, nivel: Number(at.nivel) || 0 } : null, niveis, prey,
+        partes: partes.map((x) => ({ ...x, nome: NOME_BUFF[x.id] || x.id, permanente: x.id !== 'atrasados' && (!(x.ate > 0) || x.ate >= PERMANENTE), renovavel: !!RENOVAVEL[x.id] })) };
     }
     const STATS_K =[['hp', 'HP'], ['atk', 'ATK'], ['def', 'DEF'], ['spAtk', 'SP.ATK'], ['spDef', 'SP.DEF'], ['speed', 'SPD']];
     const numTxt = (v) => Number(String(v || '').replace(/[^\d.]/g, '')) || 0;
@@ -1883,8 +1968,58 @@
       const info = {}; for (const x of a.time) if (r.info[x.speciesId]) info[x.speciesId] = r.info[x.speciesId];
       return { nick: a.nick, time: a.time, info, em: a.em };
     }
+    // 📈 TOP XP (o dono, 28/11/2026: "coloca os dois"). O jogo manda 100 linhas no ranking de nível (a tela dele mostra 50)
+    // com o XP guardado; o XP de agora vem do perfil público de cada um, um por vez, no máximo 1 a cada 3 s (≈5 min).
+    // O app compara com a leitura anterior para achar o XP/h. Nada disso aparece na tela do jogo.
+    async function topXpColetar(passoMs) {
+      const passo = Math.max(3000, Number(passoMs) || 3000);
+      try {
+        const antes = topx.linhasEm;
+        nossos.ranking = Date.now();
+        sock.send(JSON.stringify({ t: 'ranking.pedir', aba: 'nivel' }));
+        for (let i = 0; i < 20 && topx.linhasEm === antes; i++) await espera(500);
+        nossos.ranking = 0;
+        if (topx.linhasEm === antes || !topx.linhas || !topx.linhas.length) { topx.erro = 'O ranking do jogo não respondeu. Tente de novo em instantes.'; return; }
+        const linhas = topx.linhas.slice();
+        topx.total = linhas.length; topx.inicio = Date.now();
+        const lidos = {};
+        for (const l of linhas) {
+          if (topx.parar || !sock || sock.readyState !== 1) break;
+          const k = l.nick.toLowerCase();
+          const t0 = Date.now();
+          nossos.perfisXp.set(k, t0);
+          sock.send(JSON.stringify({ t: 'ranking.perfil', nick: l.nick }));
+          for (let i = 0; i < 32 && !(topx.perfis[k] && topx.perfis[k].em >= t0); i++) await espera(250);
+          if (topx.perfis[k] && topx.perfis[k].em >= t0) lidos[k] = topx.perfis[k];
+          topx.feitos++;
+          const resto = passo - (Date.now() - t0);
+          if (resto > 0) await espera(resto);
+        }
+        topx.resultado = { inicio: topx.inicio, em: Date.now(), linhas, perfis: lidos, parou: topx.parar };
+        topx.perfis = {};
+      } catch (e) { topx.erro = String(e && e.message || e); } finally {
+        topx.coletando = false; nossos.ranking = 0;
+        setTimeout(() => { if (!topx.coletando) nossos.perfisXp.clear(); }, 30000);
+      }
+    }
+    function topXp(arg) {
+      const o = arg && typeof arg === 'object' ? arg : {};
+      if (o.acao === 'coletar') {
+        if (topx.coletando) return { ok: false, motivo: 'Já está lendo o top 100.' };
+        if (pvp.coletando) return { ok: false, motivo: 'Espere a leitura do top do PvP terminar.' };
+        if (!sock || sock.readyState !== 1) return { ok: false, motivo: 'A conta não está conectada ao jogo.' };
+        Object.assign(topx, { coletando: true, parar: false, feitos: 0, total: 0, erro: null, resultado: null, perfis: {} });
+        topXpColetar(o.passoMs);
+        return { ok: true };
+      }
+      if (o.acao === 'parar') { topx.parar = true; return { ok: true }; }
+      // Estado; o resultado vai uma vez só e sai da memória da página.
+      const r = topx.resultado; if (r) topx.resultado = null;
+      return { coletando: topx.coletando, feitos: topx.feitos, total: topx.total, inicio: topx.inicio, erro: topx.erro, resultado: r, nick: jogo.eu.nick || null };
+    }
     async function pvpColetar(n = 50, passoMs = 5000) {
       if (pvp.coletando) return { ok: false, motivo: 'ja' };
+      if (topx.coletando) return { ok: false, motivo: 'lendo o Top XP' };
       if (!sock || sock.readyState !== 1) return { ok: false, motivo: 'sem conexão' };
       pvp.coletando = true; pvp.erro = null; pvp.feitos = 0;
       try {
@@ -2354,7 +2489,7 @@
         canais() { return JSON.parse(JSON.stringify(canais)); },
         // Aba PvE do app (só leitura).
         pve(o, arg) {
-          const f = o === 'nivel' ? async () => ({ L: Number(jogo.eu.level) || 0 }) : o === 'proximas' ? pveProximas : o === 'evolucoes' ? () => pveEvolucoes(arg) : o === 'meus' ? pveMeus : o === 'buscar' ? () => pveBuscar(arg) : o === 'casas' ? () => pveCasas(arg) : o === 'shiny' ? () => pveShiny(arg) : o === 'boss' ? () => pveBoss(arg) : o === 'outland' ? () => pveOutland(arg) : o === 'prey' ? pvePrey : o === 'bestiario' ? pveBestiario : o === 'mercado' ? () => (arg && typeof arg === 'object' ? pveMercado(arg.moeda, arg.dias, arg.valor) : pveMercado(arg)) : null;
+          const f = o === 'nivel' ? async () => ({ L: Number(jogo.eu.level) || 0 }) : o === 'proximas' ? pveProximas : o === 'evolucoes' ? () => pveEvolucoes(arg) : o === 'meus' ? pveMeus : o === 'buscar' ? () => pveBuscar(arg) : o === 'casas' ? () => pveCasas(arg) : o === 'shiny' ? () => pveShiny(arg) : o === 'boss' ? () => pveBoss(arg) : o === 'outland' ? () => pveOutland(arg) : o === 'prey' ? pvePrey : o === 'topxp' ? async () => topXp(arg) : o === 'previsao' ? previsaoDados : o === 'bestiario' ? pveBestiario : o === 'mercado' ? () => (arg && typeof arg === 'object' ? pveMercado(arg.moeda, arg.dias, arg.valor) : pveMercado(arg)) : null;
           return f ? f().catch((e) => ({ erro: String(e && e.message || e) })) : null;
         },
         // Comércio: nota, stats e espécie da ficha de um anúncio (mesma conta da ficha do jogo).
